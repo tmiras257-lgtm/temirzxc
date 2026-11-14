@@ -50,7 +50,7 @@ body{margin:0; background:var(--bg); color:var(--text); font-family:var(--font);
 body.locked{overflow:hidden}
 button{font:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer}
 input,select{font:inherit; color:inherit}
-.wrap{max-width:520px; margin:0 auto; padding:calc(env(safe-area-inset-top) + 12px) 16px calc(110px + env(safe-area-inset-bottom))}
+.wrap{max-width:520px; margin:0 auto; padding-top:calc(env(safe-area-inset-top) + 12px); padding-bottom:calc(110px + env(safe-area-inset-bottom)); padding-left:max(16px, env(safe-area-inset-left, 0px)); padding-right:max(16px, env(safe-area-inset-right, 0px))}
 
 /* header */
 .top{display:flex; align-items:center; justify-content:space-between; gap:12px; margin:4px 0 14px}
@@ -244,6 +244,28 @@ input,select{font:inherit; color:inherit}
 :root:not([data-theme="light"]) .toast button{color:#4E7A00}
 @media (prefers-color-scheme: light){ :root:not([data-theme="dark"]) .toast button{color:var(--accent)} }
 [hidden]{display:none !important}
+.add-tools{display:grid; grid-template-columns:1.3fr 1fr; gap:8px; margin:4px 0 10px}
+.tool{height:48px; border-radius:14px; background:var(--card); font-weight:700; font-size:14px; display:flex; align-items:center; justify-content:center; gap:8px}
+.tool.main{background:var(--accent); color:var(--accent-ink)}
+.tool svg{width:20px; height:20px}
+.note{background:var(--accent-soft); border-radius:14px; padding:12px 14px; font-size:13px; margin-top:6px}
+.note b{display:block; font-size:14px; margin-bottom:2px}
+.photo-prev{width:100%; max-height:42vh; object-fit:cover; border-radius:18px; display:block; background:var(--card)}
+.thinking{display:flex; align-items:center; gap:12px; margin:16px 2px; font-weight:700}
+.spin{width:22px; height:22px; border-radius:50%; border:3px solid var(--card2); border-top-color:var(--accent-text); animation:rot .8s linear infinite; flex:none}
+@keyframes rot{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){ .spin{animation-duration:2.4s} .sheet,.backdrop,.toast{animation:none} }
+.hand{display:grid; grid-template-columns:44px 1fr; gap:12px; align-items:start; background:var(--card); border-radius:16px; padding:14px; margin-bottom:8px}
+.hand .em{font-size:30px; line-height:1; text-align:center}
+.hand b{display:block; font-size:15px}
+.hand .eq{font-size:13px; color:var(--dim); margin-top:2px}
+.hand .x1{display:inline-block; margin-top:6px; font-size:12px; font-weight:800; background:var(--accent-soft); color:var(--accent-text); border-radius:8px; padding:3px 8px}
+.ltable{width:100%; border-collapse:collapse; font-size:14px; font-variant-numeric:tabular-nums}
+.ltable td{padding:9px 0; border-top:1px solid var(--line)}
+.ltable td:last-child{text-align:right; font-weight:800}
+.sync{display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:700; color:var(--dim)}
+.sync i{width:8px; height:8px; border-radius:50%; background:var(--faint)}
+.sync.ok i{background:var(--accent-text)}
 </style>
 </head>
 <body>
@@ -270,6 +292,7 @@ input,select{font:inherit; color:inherit}
 </nav>
 <div id="sheetRoot"></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
+<input type="file" id="photoFile" accept="image/*" hidden>
 
 <script>
 (() => {
@@ -368,6 +391,7 @@ const RAW = [
   ['juice','Сок','果汁','snack','стакан 250 мл',115,1,27,0.3],
   ['chocolate','Шоколад','巧克力','snack','50 г',270,3,30,15],
   ['fries','Картофель фри','薯条','snack','средняя порция',320,3.5,41,15],
+  ['oil','Масло (если блюдо очень жирное)','油','snack','1 ст. л. = большой палец',120,0,0,13.5],
 
   ['whey','Протеин на воде','蛋白粉','sport','1 скуп 30 г',120,24,3,1.5],
   ['shake','Протеин на молоке','蛋白粉+牛奶','sport','скуп + 250 мл молока',280,32,15,10.5],
@@ -427,7 +451,89 @@ function load(){
 let S = load();
 function save(){
   try{ localStorage.setItem(LS_KEY, JSON.stringify(S)); }
-  catch(e){ toast('Не получилось сохранить: память браузера недоступна'); }
+  catch(e){ if(!Cloud.db) toast('Не получилось сохранить: память браузера недоступна'); }
+  scheduleCloud();
+}
+
+/* ---------- Claude platform: photo recognition + cloud save (only inside Claude) ---------- */
+// Link to the version of bulking published inside Claude (photo recognition works there).
+const CLAUDE_URL = 'https://claude.ai/artifact/SUktvSDbYag2y7ijdK2K46';
+const P = {inClaude: !!(window.claude && typeof window.claude.use === 'function'), sample:null, photo:false, downloads:null};
+const Cloud = {db:null, base:null, synced:{}, busy:false, again:false, status:'local'};
+function splitState(){
+  const docs = {meta:{v:1, profile:S.profile, weights:S.weights, custom:S.custom, recent:S.recent, fav:S.fav, seenIntro:S.seenIntro}};
+  for(const [k, d] of Object.entries(S.days)){ const m = 'm-' + k.slice(0, 7); (docs[m] ||= {days:{}}).days[k] = d; }
+  return docs;
+}
+async function cloudFlush(){
+  if(!Cloud.db) return;
+  if(Cloud.busy){ Cloud.again = true; return; }
+  Cloud.busy = true;
+  try{
+    do{
+      Cloud.again = false;
+      const docs = splitState();
+      for(const [id, body] of Object.entries(docs)){
+        const js = JSON.stringify(body);
+        if(Cloud.synced[id] === js) continue;
+        await Cloud.db.doc(`${Cloud.base}/${id}`).set(JSON.parse(js));
+        Cloud.synced[id] = js;
+      }
+      for(const id of Object.keys(Cloud.synced)){
+        if(!(id in docs)){ await Cloud.db.doc(`${Cloud.base}/${id}`).delete(); delete Cloud.synced[id]; }
+      }
+    }while(Cloud.again);
+    Cloud.status = 'synced';
+  }catch(e){
+    Cloud.status = 'error';
+    if(e && e.code === 'quota_exceeded') toast('Облако заполнено — скачай копию в профиле');
+  }finally{ Cloud.busy = false; }
+}
+let flushTimer;
+function scheduleCloud(){ if(!Cloud.db) return; clearTimeout(flushTimer); flushTimer = setTimeout(cloudFlush, 700); }
+const withTimeout = (pr, ms) => Promise.race([pr, new Promise((_, rej) => setTimeout(() => rej({code:'timeout'}), ms))]);
+async function initPlatform(){
+  if(!P.inClaude) return;
+  const use = n => window.claude.use(n).catch(() => null);
+  const [sample, db, user, downloads] = await Promise.all([use('sample'), use('db'), use('user'), use('downloads')]);
+  P.downloads = downloads;
+  if(sample){
+    const lim = await sample.limits().catch(() => null);
+    if(lim && lim.images){ P.sample = sample; P.photo = true; }
+  }
+  if(db && user){
+    const id = await user.id().catch(() => null);
+    if(id){
+      const base = 'data/users/' + id;
+      try{
+        const snap = await withTimeout(db.collection(base).get(), 10000);
+        Cloud.db = db; Cloud.base = base;
+        if(snap.size){
+          const d = defaults(); const st = {...d, days:{}};
+          snap.docs.forEach(doc => {
+            const b = doc.data() || {};
+            if(doc.id === 'meta'){
+              st.profile = {...d.profile, ...(b.profile || {})};
+              st.weights = Array.isArray(b.weights) ? b.weights.map(w => ({...w})) : [];
+              st.custom = Array.isArray(b.custom) ? b.custom.map(f => ({...f})) : [];
+              st.recent = Array.isArray(b.recent) ? [...b.recent] : [];
+              st.fav = Array.isArray(b.fav) ? [...b.fav] : [];
+              st.seenIntro = !!b.seenIntro;
+            }else if(doc.id.startsWith('m-') && b.days){
+              for(const [k, day] of Object.entries(b.days)) st.days[k] = {water:day.water || 0, entries:(day.entries || []).map(e => ({...e}))};
+            }
+            Cloud.synced[doc.id] = JSON.stringify(b);
+          });
+          S = st;
+          try{ localStorage.setItem(LS_KEY, JSON.stringify(S)); }catch(e){}
+        }else{
+          cloudFlush();
+        }
+        Cloud.status = 'synced';
+      }catch(e){ Cloud.db = null; }
+    }
+  }
+  if(!$('#sheetRoot').innerHTML) render();
 }
 const UI = {tab:'diary', date:todayKey(), add:null, edit:null, foodsCat:'all', foodsQ:''};
 
@@ -567,17 +673,28 @@ function closeSheet(){
 const mealSeg = (cur, act) => `<div class="seg">${MEALS.map(m => `<button class="${m.id === cur ? 'on' : ''}" data-act="${act}" data-meal="${m.id}">${m.short}</button>`).join('')}</div>`;
 const searchIco = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`;
 
-function openAdd(meal){
-  UI.add = {meal: meal || autoMeal(), cat: S.recent.length ? 'recent' : 'all', q:'', tray:[], open:false};
+function openAdd(meal, saved){
+  UI.add = saved ? {...saved, q:''} : {meal: meal || autoMeal(), cat: S.recent.length ? 'recent' : 'all', q:'', tray:[], open:false, note:''};
+  UI.savedAdd = null;
   openSheet(`<div class="sheet-head">
       <div class="sheet-title">Что взял в столовой?<button class="x" data-act="close" aria-label="Закрыть">✕</button></div>
       <div id="addSeg">${mealSeg(UI.add.meal, 'add-meal')}</div>
       <label class="search">${searchIco}<input id="addQ" type="search" placeholder="Рис, курица, 番茄炒蛋…" autocomplete="off" enterkeyhint="search"></label>
       <div class="chips" id="addCats"></div>
     </div>
-    <div class="sheet-body"><div class="hint" style="margin-top:6px">Нажимай блюда — они кладутся на поднос. Взял большую порцию — ставь ×1,5, половину — ×0,5.</div><div class="foods" id="addList"></div></div>
+    <div class="sheet-body">
+      <div class="add-tools">
+        <button class="tool main" data-act="photo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>Фото подноса</button>
+        <button class="tool" data-act="guide">✋ Порции рукой</button>
+      </div>
+      <div id="addNote"></div>
+      <div class="hint">Нажимай блюда — они кладутся на поднос. Взял большую порцию — ставь ×1,5, половину — ×0,5.</div><div class="foods" id="addList"></div></div>
     <div class="sheet-foot" id="tray"></div>`);
-  renderAddCats(); renderAddList(); renderTray();
+  renderAddCats(); renderAddNote(); renderAddList(); renderTray();
+}
+function renderAddNote(){
+  const a = UI.add; if(!a) return;
+  $('#addNote').innerHTML = a.note ? `<div class="note" style="margin-bottom:10px"><b>📷 Распознано по фото — проверь порции на подносе</b>${esc(a.note)}</div>` : '';
 }
 function renderAddCats(){
   const a = UI.add;
@@ -618,7 +735,7 @@ function renderTray(){
   const count = a.tray.length;
   const mealName = MEALS.find(m => m.id === a.meal).short.toLowerCase();
   $('#tray').innerHTML = `${a.open && count ? `<div class="tray-lines">${a.tray.map((t, i) => `<div class="tline">
-        <button class="star ${S.fav.includes(t.food.id) ? 'on' : ''}" data-act="fav" data-fid="${esc(t.food.id)}" aria-label="В избранное">★</button>
+        ${foodById(t.food.id) ? `<button class="star ${S.fav.includes(t.food.id) ? 'on' : ''}" data-act="fav" data-fid="${esc(t.food.id)}" aria-label="В избранное">★</button>` : '<span class="star" title="Оценка по фото">📷</span>'}
         <div class="t-name">${esc(t.food.name)}</div>
         <div class="stepper"><button data-act="tray-dec" data-i="${i}">−</button><span>×${fq(t.qty)}</span><button data-act="tray-inc" data-i="${i}">+</button></div>
         <div class="t-k">${fmt(t.food.kcal * t.qty)}</div></div>`).join('')}</div>` : ''}
@@ -674,7 +791,8 @@ function openQuick(name, saveDefault){
 function renderFoodsTab(){
   return header() + `<div class="card" style="padding:14px 16px">
       <div style="font-weight:800;font-size:17px">База блюд столовой</div>
-      <div class="small muted">Средние значения для типичной порции китайской столовой. Своё блюдо можно добавить внизу.</div></div>
+      <div class="small muted">Средние значения для типичной порции китайской столовой. Своё блюдо можно добавить внизу.</div>
+      <button class="btn btn-soft" style="margin-top:12px" data-act="guide">✋ Как оценить порцию рукой</button></div>
     <label class="search">${searchIco}<input id="foodsQ" type="search" placeholder="Поиск блюда" value="${esc(UI.foodsQ)}" autocomplete="off"></label>
     <div class="chips" id="foodsCats">${CATS.filter(c => c.id !== 'recent').map(c => `<button class="chip ${c.id === UI.foodsCat && !UI.foodsQ ? 'on' : ''}" data-act="foods-cat" data-cat="${c.id}">${c.name}</button>`).join('')}</div>
     <div class="foods" id="foodsList"></div>`;
@@ -808,11 +926,12 @@ function renderProfile(){
     </section>
     <div class="h2">Данные</div>
     <section class="card">
-      <div class="small muted" style="margin-bottom:12px">Всё хранится только в этом браузере на телефоне. Делай резервную копию, если будешь менять телефон или чистить браузер.</div>
+      <div style="margin-bottom:8px"><span class="sync ${Cloud.db ? 'ok' : ''}"><i></i>${Cloud.db ? 'Сохраняется в твоём аккаунте Claude' : 'Сохраняется только в этом браузере'}</span></div>
+      <div class="small muted" style="margin-bottom:12px">${Cloud.db ? 'Записи доступны с любого устройства, где ты открываешь bulking в Claude. Копию всё равно полезно иногда скачивать.' : 'Делай резервную копию, если будешь менять телефон или чистить браузер.'}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn" data-act="export">⬇ Скачать копию</button>
         <button class="btn" data-act="import">⬆ Загрузить копию</button>
-        <button class="btn btn-danger" data-act="reset">Сбросить всё</button>
+        <button class="btn btn-danger" data-act="reset" id="resetBtn">Сбросить всё</button>
       </div>
     </section>
     <p class="small muted" style="text-align:center;margin:22px 0 0">Калории блюд — средние оценки для порций столовой. Точность ±15–20%, поэтому главный ориентир — недельный темп веса на вкладке «Прогресс».</p>`;
@@ -829,6 +948,152 @@ function calcBlock(){
     <div class="kv"><span class="muted">Базовый обмен (BMR)</span><b>${fmt(t.bmr)} ккал</b></div>
     <div class="kv"><span class="muted">Расход с активностью</span><b>${fmt(t.tdee)} ккал</b></div>
     <div class="kv"><span class="muted">${p.customKcal ? 'Норма задана вручную' : 'Профицит для набора'}</span><b>${p.customKcal ? '✎' : '+' + p.surplus + ' ккал'}</b></div>`;
+}
+
+/* ---------- portion guide ---------- */
+function openGuide(){
+  UI.savedAdd = UI.add;
+  const back = !!UI.add;
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Порции рукой<button class="x" data-act="${back ? 'guide-back' : 'close'}" aria-label="Закрыть">✕</button></div>
+    <div class="small muted">Без весов удобнее всего сравнивать еду со своей рукой: она всегда с собой и пропорциональна твоему телу.</div></div>
+    <div class="sheet-body">
+      <div class="hand"><div class="em">✊</div><div><b>Кулак — гарнир</b><div class="eq">Рис, лапша, картошка, каша. Кулак ≈ 1 миска ≈ 200 г ≈ 260 ккал риса.</div><span class="x1">1 кулак = ×1 «Рис белый»</span></div></div>
+      <div class="hand"><div class="em">🖐</div><div><b>Ладонь — мясо, рыба, тофу</b><div class="eq">Кусок размером и толщиной с ладонь без пальцев ≈ 100–120 г ≈ 25–30 г белка. Это примерно один черпак мясного блюда.</div><span class="x1">1 ладонь = ×1 мясного блюда</span></div></div>
+      <div class="hand"><div class="em">🤲</div><div><b>Две ладони — овощи</b><div class="eq">Горка овощей, которая помещается в две сложенные ладони, — одна порция овощного блюда.</div><span class="x1">2 ладони = ×1 овощей</span></div></div>
+      <div class="hand"><div class="em">🫴</div><div><b>Горсть — орехи, сухофрукты</b><div class="eq">Одна сложенная ладонь ≈ 30 г ≈ 180 ккал орехов.</div><span class="x1">1 горсть = ×1 «Орехи»</span></div></div>
+      <div class="hand"><div class="em">👍</div><div><b>Большой палец — масло и соусы</b><div class="eq">1 ст. л. масла, соуса или арахисовой пасты ≈ 100–120 ккал. Если блюдо блестит и на дне лужица масла — добавь «Масло» ×1.</div><span class="x1">1 палец = ×1 «Масло»</span></div></div>
+      <div class="h2" style="margin-top:16px">Перевод в порции</div>
+      <div class="card" style="padding:4px 16px">
+        <table class="ltable"><tbody>
+          <tr><td>Половина кулака риса</td><td>×0,5</td></tr>
+          <tr><td>Полтора кулака / двойной черпак</td><td>×1,5</td></tr>
+          <tr><td>Два кулака риса</td><td>×2</td></tr>
+          <tr><td>Половина ладони мяса</td><td>×0,5</td></tr>
+          <tr><td>Две ладони мяса</td><td>×2</td></tr>
+        </tbody></table>
+      </div>
+      <div class="note"><b>Если сомневаешься — округляй вверх</b>В столовой масла обычно больше, чем видно. Для набора массы недоесть хуже, чем переоценить на 100 ккал. А если вес всё равно не растёт, вкладка «Прогресс» подскажет поднять норму.</div>
+    </div>
+    <div class="sheet-foot"><button class="btn btn-accent btn-block" data-act="${back ? 'guide-back' : 'close'}">Понятно</button></div>`);
+}
+
+/* ---------- photo recognition ---------- */
+function openPhotoUnavailable(){
+  if(UI.add) UI.savedAdd = UI.add;
+  const keepMeal = !!UI.savedAdd;
+  const body = P.inClaude
+    ? `<p>Чтобы распознавать фото, страница должна использовать Claude с твоего аккаунта. Разреши это в меню артефакта (Разрешения) и открой страницу заново.</p>`
+    : `<p>Фото распознаёт Claude, поэтому эта функция работает в версии bulking, которая открыта внутри Claude. Там же записи сохраняются в твоём аккаунте.</p>
+       ${CLAUDE_URL ? `<a class="btn btn-accent btn-block" href="${CLAUDE_URL}" target="_blank" rel="noopener" style="text-decoration:none">Открыть bulking в Claude</a>` : ''}
+       <p class="small muted">Записи из этой версии можно перенести: «Профиль» → «Скачать копию» здесь, затем «Загрузить копию» там.</p>`;
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Фото подноса<button class="x" data-act="${keepMeal ? 'guide-back' : 'close'}" aria-label="Закрыть">✕</button></div></div>
+    <div class="sheet-body">${body}</div>`);
+}
+function photoPrompt(){
+  const list = allFoods().map(f => `${f.id} | ${f.name} | ${f.zh || ''} | ${f.portion || 'порция'} | ${f.kcal} kcal, P${f.p} C${f.c} F${f.f}`).join('\n');
+  return `You estimate food for a student who is bulking and eats in a Chinese university canteen (食堂). The attached photo shows what they took (a tray, plate, bowl or packaged food). Identify every distinct food and drink and estimate how much of each there is.
+
+Reference list of canteen dishes with their standard portion (id | name | 汉字 | standard portion | nutrition per ONE standard portion):
+${list}
+
+Rules:
+- If an item matches a dish in the list, use its id and set qty = how many standard portions are on the photo (steps of 0.25: 0.5, 0.75, 1, 1.5, 2...). Do not give nutrition for matched ids.
+- If nothing in the list fits, set id to null and give: name (Russian), zh (Chinese name if you know it, else ""), portion (short Russian description of what you see, e.g. "порция ~150 г"), qty 1, and kcal, p, c, f (grams) for that portion.
+- Judge size from references in the photo: a tray compartment holds about one ladle (~150 g of a dish); a rice bowl holds ~200 g of rice; a fist ≈ 200 g of cooked rice, a palm ≈ 100–120 g of meat, a thumb ≈ 1 tablespoon of oil.
+- Canteen dishes are usually oily. If a dish looks glossy or sits in oil, add {"id":"oil","qty":0.5} or {"id":"oil","qty":1}.
+- Ignore cutlery, napkins, the tray itself and packaging. If there is no food on the photo, return an empty items array and say so in note.
+- confidence is "high", "medium" or "low".
+- note: one short sentence in Russian about anything uncertain (what was hidden or hard to judge).
+
+Reply with only JSON in this shape:
+{"items":[{"id":"rice","qty":1.5,"confidence":"high"},{"id":null,"name":"Курица с ананасом","zh":"菠萝鸡","portion":"порция ~150 г","qty":1,"kcal":320,"p":20,"c":25,"f":15,"confidence":"medium"}],"note":"..."}`;
+}
+async function prepImage(file){
+  try{
+    const bmp = await createImageBitmap(file);
+    const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const b = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+    return b || file;
+  }catch(e){ return file; }
+}
+function photoSheet(inner){
+  const ph = UI.photo;
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Фото подноса<button class="x" data-act="photo-close" aria-label="Закрыть">✕</button></div></div>
+    <div class="sheet-body"><img class="photo-prev" src="${ph.url}" alt="Твоё фото еды">${inner}</div>`);
+}
+const PHOTO_ERR = {
+  rate_limited:'Лимит запросов Claude на сейчас исчерпан. Попробуй позже или добавь блюда из списка.',
+  image_rejected:'Не получилось прочитать это фото. Сделай другое.',
+  refused:'Claude не стал разбирать это фото. Попробуй другое.',
+  session_expired:'Нужно заново войти в Claude.',
+  invalid_json:'Ответ получился непонятным. Попробуй ещё раз.',
+  empty_completion:'Пустой ответ. Попробуй ещё раз или сделай фото ближе.',
+};
+async function runPhoto(blob){
+  const prev = UI.photo;
+  if(prev && prev.url && prev.blob !== blob) URL.revokeObjectURL(prev.url);
+  const ctl = new AbortController();
+  UI.photo = {blob, url:(prev && prev.blob === blob) ? prev.url : URL.createObjectURL(blob), ctl, meal:UI.photoMeal || autoMeal()};
+  photoSheet(`<div class="thinking"><span class="spin"></span>Claude смотрит на фото…</div>
+    <div class="small muted" style="margin-bottom:14px">Обычно 10–40 секунд. Потом проверишь порции и добавишь.</div>
+    <button class="btn btn-block" data-act="photo-stop">Отменить</button>`);
+  let res;
+  try{
+    res = await P.sample.json(photoPrompt(), {images:[blob], signal:ctl.signal});
+  }catch(e){
+    if(!UI.photo || UI.photo.ctl !== ctl) return;
+    const code = e && e.code;
+    if(code === 'cancelled'){ const saved = UI.savedAdd; closePhoto(); if(saved) openAdd(null, saved); return; }
+    if(['not_granted','sampling_disabled','not_declared','capability_disabled','capability_removed','images_unavailable'].includes(code)){
+      P.photo = false; closePhoto(); openPhotoUnavailable(); return;
+    }
+    photoSheet(`<div class="note" style="margin-top:14px"><b>Не получилось распознать</b>${esc(PHOTO_ERR[code] || 'Сбой связи с Claude. Попробуй ещё раз.')}</div>
+      <div style="display:flex;gap:8px;margin-top:12px"><button class="btn" style="flex:1;height:48px" data-act="photo-new">Другое фото</button>${code === 'rate_limited' ? '' : '<button class="btn btn-accent" style="flex:1;height:48px" data-act="photo-retry">Ещё раз</button>'}</div>`);
+    return;
+  }
+  if(!UI.photo || UI.photo.ctl !== ctl) return;
+  const tray = photoToTray(res);
+  const note = res && typeof res.note === 'string' ? res.note.slice(0, 300) : '';
+  if(!tray.length){
+    photoSheet(`<div class="note" style="margin-top:14px"><b>Не вижу еды на фото</b>${esc(note || 'Сфоткай поднос сверху, чтобы было видно все блюда.')}</div>
+      <button class="btn btn-accent btn-block" style="margin-top:12px" data-act="photo-new">Сделать другое фото</button>`);
+    return;
+  }
+  const meal = UI.photo.meal, saved = UI.savedAdd;
+  closePhoto();
+  openAdd(meal, saved);
+  for(const t of tray){ const same = UI.add.tray.find(x => x.food.id === t.food.id); if(same) same.qty += t.qty; else UI.add.tray.push(t); }
+  UI.add.open = true; UI.add.note = note || 'Порции оценены на глаз — поправь, если взял больше или меньше.';
+  renderAddNote(); renderAddList(); renderTray();
+}
+function photoToTray(res){
+  const items = res && Array.isArray(res.items) ? res.items.slice(0, 15) : [];
+  const out = [];
+  const q4 = v => Math.min(10, Math.max(0.25, Math.round(num(v) * 4) / 4 || 1));
+  for(const it of items){
+    if(!it || typeof it !== 'object') continue;
+    const known = it.id ? foodById(String(it.id)) : null;
+    let food;
+    if(known) food = known;
+    else{
+      const kcal = num(it.kcal);
+      if(!(kcal > 0) || !it.name) continue;
+      food = {id:'ph_' + uid(), name:String(it.name).slice(0, 60), zh:String(it.zh || '').slice(0, 20), portion:String(it.portion || 'порция').slice(0, 40),
+        kcal:Math.round(kcal), p:Math.max(0, r1(num(it.p))), c:Math.max(0, r1(num(it.c))), f:Math.max(0, r1(num(it.f)))};
+    }
+    const qty = q4(it.qty);
+    const same = known && out.find(t => t.food.id === known.id);
+    if(same) same.qty = Math.min(10, same.qty + qty); else out.push({food, qty});
+  }
+  return out;
+}
+const r1 = n => Math.round(n * 10) / 10;
+function closePhoto(){
+  if(UI.photo && UI.photo.url) URL.revokeObjectURL(UI.photo.url);
+  UI.photo = null; closeSheet();
 }
 
 /* ---------- toast ---------- */
@@ -852,7 +1117,7 @@ function makeEntry(f, qty, meal){
 function addEntries(entries, label){
   const day = ensureDay(UI.date);
   day.entries.push(...entries);
-  entries.forEach(e => e.fid && pushRecent(e.fid));
+  entries.forEach(e => e.fid && foodById(e.fid) && pushRecent(e.fid));
   save(); render();
   const ids = new Set(entries.map(e => e.id)), dateK = UI.date;
   toast(label || `Добавлено ${fmt(sumUp(entries).kcal)} ккал`, () => {
@@ -867,6 +1132,8 @@ const A = {
   'intro-ok'(){ S.seenIntro = true; save(); render(); },
   'intro-profile'(){ S.seenIntro = true; save(); UI.tab = 'profile'; render(); },
   close: closeSheet,
+  'guide-back'(){ const saved = UI.savedAdd; closeSheet(); if(saved) openAdd(null, saved); },
+  'photo-close'(){ UI.photo && UI.photo.ctl && UI.photo.ctl.abort(); const saved = UI.savedAdd; closePhoto(); if(saved) openAdd(null, saved); },
   'open-add'(el){ if(UI.tab !== 'diary'){ UI.tab = 'diary'; render(); } openAdd(el.dataset.meal); },
   'add-meal'(el){ UI.add.meal = el.dataset.meal; $('#addSeg').innerHTML = mealSeg(UI.add.meal, 'add-meal'); renderTray(); },
   'add-cat'(el){ UI.add.cat = el.dataset.cat; UI.add.q = ''; $('#addQ').value = ''; renderAddCats(); renderAddList(); },
@@ -972,18 +1239,38 @@ const A = {
     save(); render(); toast(`Новая норма: ${fmt(targets().kcal)} ккал`);
   },
   sex(el){ S.profile.sex = el.dataset.v; save(); render(); },
-  export(){
-    const blob = new Blob([JSON.stringify(S, null, 2)], {type:'application/json'});
+  async export(){
+    const json = JSON.stringify(S, null, 2), filename = `bulking-backup-${todayKey()}.json`;
+    if(P.downloads){
+      try{ await P.downloads.save({filename, data:json}); toast('Копия сохранена'); }
+      catch(e){ if(e && e.code !== 'declined') toast('Не получилось скачать копию'); }
+      return;
+    }
+    const blob = new Blob([json], {type:'application/json'});
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = `bulking-backup-${todayKey()}.json`;
+    a.href = URL.createObjectURL(blob); a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   },
   import(){ $('#importFile').click(); },
-  reset(){
-    if(!confirm('Удалить все записи, вес и свои блюда? Это нельзя отменить.')) return;
+  reset(el){
+    if(!el.dataset.armed){
+      el.dataset.armed = '1'; el.textContent = 'Точно удалить всё? Нажми ещё раз';
+      setTimeout(() => { if(el.isConnected){ delete el.dataset.armed; el.textContent = 'Сбросить всё'; } }, 4000);
+      return;
+    }
     S = defaults(); save(); UI.date = todayKey(); render(); toast('Всё сброшено');
   },
+  guide: openGuide,
+  photo(){
+    if(!P.photo) return openPhotoUnavailable();
+    if(UI.add) UI.savedAdd = UI.add;
+    UI.photoMeal = (UI.savedAdd && UI.savedAdd.meal) || autoMeal();
+    $('#photoFile').click();
+  },
+  'photo-stop'(){ UI.photo && UI.photo.ctl && UI.photo.ctl.abort(); },
+  'photo-retry'(){ if(UI.photo) runPhoto(UI.photo.blob); },
+  'photo-new'(){ $('#photoFile').click(); },
 };
 
 document.addEventListener('click', ev => {
@@ -1024,6 +1311,13 @@ $('#importFile').addEventListener('change', async ev => {
   }catch(e){ toast('Это не похоже на файл копии bulking'); }
 });
 
+$('#photoFile').addEventListener('change', async ev => {
+  const file = ev.target.files[0]; ev.target.value = '';
+  if(!file || !P.photo) return;
+  const blob = await prepImage(file);
+  runPhoto(blob);
+});
+
 // day rolls over while the app stays open
 let lastToday = todayKey();
 document.addEventListener('visibilitychange', () => {
@@ -1034,7 +1328,8 @@ document.addEventListener('visibilitychange', () => {
 });
 
 render();
-if('serviceWorker' in navigator && location.protocol.startsWith('http')){
+initPlatform();
+if(!P.inClaude && 'serviceWorker' in navigator && location.protocol.startsWith('http')){
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
 })();

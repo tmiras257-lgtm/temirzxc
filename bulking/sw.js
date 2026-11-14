@@ -1,5 +1,5 @@
 // Network-first cache so the app opens offline (e.g. bad Wi-Fi in the canteen)
-const CACHE = 'bulking-v1';
+const CACHE = 'bulking-v2';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
