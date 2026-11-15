@@ -324,6 +324,7 @@ const RAW = [
   ['fried_noodles','Жареная лапша','炒面','staple','тарелка ~300 г',560,15,72,23],
   ['chow_fun','Жареная рисовая лапша','炒河粉','staple','тарелка ~300 г',520,14,72,19],
   ['mantou','Маньтоу (паровая булочка)','馒头','staple','1 шт ~100 г',225,7,46,1],
+  ['pancake','Тонкий блинчик для утки','薄饼 荷叶饼','staple','1 шт',50,1.5,9,1],
   ['sweet_potato','Батат','红薯','staple','1 шт ~200 г',180,3,41,0.3],
   ['corn','Кукуруза','玉米','staple','1 початок',130,4,26,1.5],
   ['congee','Рисовая каша','白粥','staple','миска ~300 г',130,3,28,0.4],
@@ -343,7 +344,8 @@ const RAW = [
   ['fried_leg','Жареная куриная ножка','炸鸡腿','meat','1 шт',350,25,12,22],
   ['ribs','Свиные рёбрышки','排骨','meat','порция ~150 г',380,22,10,28],
   ['curry_chicken','Курица карри','咖喱鸡','meat','порция ~150 г',270,18,14,16],
-  ['duck','Утка жареная','烧鸭','meat','порция ~100 г',300,18,0,25],
+  ['duck','Утка жареная с кожей','烤鸭 烧鸭','meat','~90 г (5–6 ломтиков)',270,16,0,23],
+  ['duck_lean','Утка без кожи','鸭肉','meat','~90 г',180,21,0,10],
   ['meatballs','Мясные фрикадельки','狮子头','meat','2 шт',320,16,10,24],
   ['chicken_breast','Куриная грудка','鸡胸肉','meat','порция ~150 г',250,46,0,6],
   ['sausage','Сосиска жареная','烤肠','meat','1 шт',180,7,5,15],
@@ -357,6 +359,7 @@ const RAW = [
   ['cabbage','Капуста жареная','手撕包菜','veg','порция ~150 г',110,2,9,7],
   ['beans','Стручковая фасоль','干煸四季豆','veg','порция ~150 г',180,3,11,14],
   ['soup','Суп дня','例汤','veg','миска ~250 мл',60,3,4,3],
+  ['herbs','Зелень: кинза, салат, лук','香菜 生菜 葱','veg','горсть ~20 г',5,0.4,0.6,0.1],
 
   ['huangmen','Курица хуанмэнь с рисом','黄焖鸡米饭','set','порция',750,36,86,28],
   ['beef_noodle','Лапша с говядиной','牛肉面','set','миска',550,26,74,16],
@@ -499,7 +502,8 @@ async function initPlatform(){
   P.downloads = downloads;
   if(sample){
     const lim = await sample.limits().catch(() => null);
-    if(lim && lim.images){ P.sample = sample; P.photo = true; }
+    P.sample = sample;
+    if(lim && lim.images) P.photo = true;
   }
   if(db && user){
     const id = await user.id().catch(() => null);
@@ -685,16 +689,16 @@ function openAdd(meal, saved){
     <div class="sheet-body">
       <div class="add-tools">
         <button class="tool main" data-act="photo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>Фото подноса</button>
-        <button class="tool" data-act="guide">✋ Порции рукой</button>
+        <button class="tool" data-act="describe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13 7 4 4"/></svg>Написать словами</button>
       </div>
       <div id="addNote"></div>
-      <div class="hint">Нажимай блюда — они кладутся на поднос. Взял большую порцию — ставь ×1,5, половину — ×0,5.</div><div class="foods" id="addList"></div></div>
+      <div class="hint">Нажимай блюда — они кладутся на поднос. Взял большую порцию — ставь ×1,5, половину — ×0,5. <button class="btn-ghost" style="font-weight:700;font-size:12px" data-act="guide">✋ Как оценить рукой</button></div><div class="foods" id="addList"></div></div>
     <div class="sheet-foot" id="tray"></div>`);
   renderAddCats(); renderAddNote(); renderAddList(); renderTray();
 }
 function renderAddNote(){
   const a = UI.add; if(!a) return;
-  $('#addNote').innerHTML = a.note ? `<div class="note" style="margin-bottom:10px"><b>📷 Распознано по фото — проверь порции на подносе</b>${esc(a.note)}</div>` : '';
+  $('#addNote').innerHTML = a.note ? `<div class="note" style="margin-bottom:10px"><b>${a.noteTitle || '📷 Распознано по фото'} — проверь порции на подносе</b>${esc(a.note)}</div>` : '';
 }
 function renderAddCats(){
   const a = UI.add;
@@ -977,33 +981,42 @@ function openGuide(){
     <div class="sheet-foot"><button class="btn btn-accent btn-block" data-act="${back ? 'guide-back' : 'close'}">Понятно</button></div>`);
 }
 
-/* ---------- photo recognition ---------- */
+/* ---------- Claude recognition: photo and/or words ---------- */
 function openPhotoUnavailable(){
   if(UI.add) UI.savedAdd = UI.add;
   const keepMeal = !!UI.savedAdd;
   const body = P.inClaude
-    ? `<p>Чтобы распознавать фото, страница должна использовать Claude с твоего аккаунта. Разреши это в меню артефакта (Разрешения) и открой страницу заново.</p>`
-    : `<p>Фото распознаёт Claude, поэтому эта функция работает в версии bulking, которая открыта внутри Claude. Там же записи сохраняются в твоём аккаунте.</p>
+    ? `<p>Чтобы распознавать еду, страница должна использовать Claude с твоего аккаунта. Разреши это в меню артефакта (Разрешения) и открой страницу заново.</p>`
+    : `<p>Еду по фото и по описанию распознаёт Claude, поэтому это работает в версии bulking, которая открыта внутри Claude. Там же записи сохраняются в твоём аккаунте.</p>
        ${CLAUDE_URL ? `<a class="btn btn-accent btn-block" href="${CLAUDE_URL}" target="_blank" rel="noopener" style="text-decoration:none">Открыть bulking в Claude</a>` : ''}
        <p class="small muted">Записи из этой версии можно перенести: «Профиль» → «Скачать копию» здесь, затем «Загрузить копию» там.</p>`;
-  openSheet(`<div class="sheet-head"><div class="sheet-title">Фото подноса<button class="x" data-act="${keepMeal ? 'guide-back' : 'close'}" aria-label="Закрыть">✕</button></div></div>
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Распознавание еды<button class="x" data-act="${keepMeal ? 'guide-back' : 'close'}" aria-label="Закрыть">✕</button></div></div>
     <div class="sheet-body">${body}</div>`);
 }
-function photoPrompt(){
+function aiPrompt(hint, hasImage){
   const list = allFoods().map(f => `${f.id} | ${f.name} | ${f.zh || ''} | ${f.portion || 'порция'} | ${f.kcal} kcal, P${f.p} C${f.c} F${f.f}`).join('\n');
-  return `You estimate food for a student who is bulking and eats in a Chinese university canteen (食堂). The attached photo shows what they took (a tray, plate, bowl or packaged food). Identify every distinct food and drink and estimate how much of each there is.
-
+  const usual = S.recent.slice(0, 12).map(foodById).filter(Boolean).map(f => `${f.id} (${f.name})`).join(', ');
+  const what = hasImage
+    ? 'The attached photo shows what they took (a tray, plate, bowl or packaged food). Identify every distinct food and drink and estimate how much of each there is.'
+    : 'They describe in their own words what they ate. Turn the description into a list of foods with amounts.';
+  const words = hint
+    ? `\nThe student's own words (Russian). Trust them over the photo whenever they say which food it is, how many pieces or how many grams:\n<<<${hint.slice(0, 600)}>>>\n`
+    : '';
+  return `You estimate food for a student who is bulking and eats in a Chinese university canteen (食堂). ${what}
+${words}
 Reference list of canteen dishes with their standard portion (id | name | 汉字 | standard portion | nutrition per ONE standard portion):
 ${list}
-
+${usual ? `\nDishes this student logs often (prefer them when two options look alike): ${usual}\n` : ''}
 Rules:
-- If an item matches a dish in the list, use its id and set qty = how many standard portions are on the photo (steps of 0.25: 0.5, 0.75, 1, 1.5, 2...). Do not give nutrition for matched ids.
-- If nothing in the list fits, set id to null and give: name (Russian), zh (Chinese name if you know it, else ""), portion (short Russian description of what you see, e.g. "порция ~150 г"), qty 1, and kcal, p, c, f (grams) for that portion.
-- Judge size from references in the photo: a tray compartment holds about one ladle (~150 g of a dish); a rice bowl holds ~200 g of rice; a fist ≈ 200 g of cooked rice, a palm ≈ 100–120 g of meat, a thumb ≈ 1 tablespoon of oil.
-- Canteen dishes are usually oily. If a dish looks glossy or sits in oil, add {"id":"oil","qty":0.5} or {"id":"oil","qty":1}.
-- Ignore cutlery, napkins, the tray itself and packaging. If there is no food on the photo, return an empty items array and say so in note.
+- If an item matches a dish in the list, use its id and set qty = amount / standard portion (steps of 0.25). If grams are given, compute qty from the grams in the portion text (90 g of duck with portion "~90 г" is qty 1; 45 g is 0.5). For per-piece items qty is the number of pieces. Do not give nutrition for matched ids.
+- If nothing in the list fits, set id to null and give: name (Russian), zh (Chinese name if you know it, else ""), portion (short Russian description, e.g. "порция ~150 г"), qty 1, and kcal, p, c, f (grams) for that portion.
+- Meats that look alike: roast duck (烤鸭/烧鸭, id duck) has thin brown crisp skin with a fat layer under it and darker meat, often with small bones; duck meat without skin is id duck_lean; char siu (叉烧, pork) has a red or caramelized sweet glaze on the edges; braised pork belly (红烧肉) is glossy dark cubes with visible layers of fat. Never call duck pork. If unsure, pick the likeliest, set confidence "low" and name the alternative in note.
+- Peking-duck style wraps: thin pancakes are id pancake (per piece); cilantro, lettuce and scallion are id herbs (one handful is about 20 g, so 20 g of greens in total is qty 1).
+- Judge size from references: a tray compartment holds about one ladle (~150 g of a dish); a rice bowl holds ~200 g of rice; a fist is about 200 g of cooked rice, a palm about 100–120 g of meat, a thumb about 1 tablespoon of oil.
+- Canteen dishes are usually oily. If a dish looks glossy or sits in oil, add {"id":"oil","qty":0.5} or {"id":"oil","qty":1}. Do not add oil for roast duck, pancakes or greens.
+- Ignore cutlery, napkins, the tray and packaging. If there is no food, return an empty items array and say so in note.
 - confidence is "high", "medium" or "low".
-- note: one short sentence in Russian about anything uncertain (what was hidden or hard to judge).
+- note: one short sentence in Russian about anything uncertain.
 
 Reply with only JSON in this shape:
 {"items":[{"id":"rice","qty":1.5,"confidence":"high"},{"id":null,"name":"Курица с ананасом","zh":"菠萝鸡","portion":"порция ~150 г","qty":1,"kcal":320,"p":20,"c":25,"f":15,"confidence":"medium"}],"note":"..."}`;
@@ -1019,60 +1032,79 @@ async function prepImage(file){
     return b || file;
   }catch(e){ return file; }
 }
-function photoSheet(inner){
-  const ph = UI.photo;
-  openSheet(`<div class="sheet-head"><div class="sheet-title">Фото подноса<button class="x" data-act="photo-close" aria-label="Закрыть">✕</button></div></div>
-    <div class="sheet-body"><img class="photo-prev" src="${ph.url}" alt="Твоё фото еды">${inner}</div>`);
+function startAi(){
+  if(UI.add) UI.savedAdd = UI.add;
+  if(UI.ai && UI.ai.url) URL.revokeObjectURL(UI.ai.url);
+  UI.ai = {blob:null, url:null, hint:'', ctl:null, meal:(UI.savedAdd && UI.savedAdd.meal) || autoMeal()};
 }
-const PHOTO_ERR = {
+function aiSheet(inner, focus){
+  const ai = UI.ai;
+  openSheet(`<div class="sheet-head"><div class="sheet-title">${ai.blob ? 'Фото подноса' : 'Что ты съел?'}<button class="x" data-act="ai-close" aria-label="Закрыть">✕</button></div></div>
+    <div class="sheet-body">${ai.blob ? `<img class="photo-prev" src="${ai.url}" alt="Твоё фото еды">` : ''}${inner}</div>`);
+  if(focus) setTimeout(() => { const el = $('#aiHint'); if(el) el.focus(); }, 280);
+}
+function aiForm(){
+  const ai = UI.ai;
+  aiSheet(`<label class="field" style="margin-top:14px"><span>${ai.blob ? 'Подсказка для Claude (необязательно)' : 'Опиши, что и сколько взял'}</span>
+      <textarea class="input" id="aiHint" rows="3" style="height:auto;padding:12px 14px;resize:none;line-height:1.4" placeholder="${ai.blob ? 'Например: это утка, а не свинина; 3 блинчика' : 'Например: 3 тонких блинчика, 90 г утки, 10 г кинзы и 10 г салата'}">${esc(ai.hint)}</textarea></label>
+    <div class="small muted" style="margin:-4px 2px 14px">Можно писать граммы, штуки или «половина миски». Китайские названия тоже понимает.</div>
+    <div style="display:flex;gap:8px">
+      ${P.photo ? `<button class="btn" style="flex:1;height:50px" data-act="photo">${ai.blob ? 'Другое фото' : '📷 Добавить фото'}</button>` : ''}
+      <button class="btn btn-accent" style="flex:1.4;height:50px" data-act="ai-run">Распознать</button>
+    </div>`, !ai.blob);
+}
+const AI_ERR = {
   rate_limited:'Лимит запросов Claude на сейчас исчерпан. Попробуй позже или добавь блюда из списка.',
   image_rejected:'Не получилось прочитать это фото. Сделай другое.',
-  refused:'Claude не стал разбирать это фото. Попробуй другое.',
+  refused:'Claude не стал это разбирать. Попробуй другое фото или опиши словами.',
   session_expired:'Нужно заново войти в Claude.',
   invalid_json:'Ответ получился непонятным. Попробуй ещё раз.',
-  empty_completion:'Пустой ответ. Попробуй ещё раз или сделай фото ближе.',
+  empty_completion:'Пустой ответ. Попробуй ещё раз или опиши подробнее.',
 };
-async function runPhoto(blob){
-  const prev = UI.photo;
-  if(prev && prev.url && prev.blob !== blob) URL.revokeObjectURL(prev.url);
-  const ctl = new AbortController();
-  UI.photo = {blob, url:(prev && prev.blob === blob) ? prev.url : URL.createObjectURL(blob), ctl, meal:UI.photoMeal || autoMeal()};
-  photoSheet(`<div class="thinking"><span class="spin"></span>Claude смотрит на фото…</div>
+async function runAi(){
+  const ai = UI.ai; if(!ai) return;
+  const hint = ai.hint.trim();
+  if(!ai.blob && !hint){ toast('Напиши, что съел, или добавь фото'); return; }
+  const ctl = new AbortController(); ai.ctl = ctl;
+  aiSheet(`<div class="thinking"><span class="spin"></span>${ai.blob ? 'Claude смотрит на фото…' : 'Claude разбирает описание…'}</div>
+    ${hint ? `<div class="small muted" style="margin-bottom:10px">«${esc(hint.slice(0, 140))}»</div>` : ''}
     <div class="small muted" style="margin-bottom:14px">Обычно 10–40 секунд. Потом проверишь порции и добавишь.</div>
-    <button class="btn btn-block" data-act="photo-stop">Отменить</button>`);
+    <button class="btn btn-block" data-act="ai-stop">Отменить</button>`);
   let res;
   try{
-    res = await P.sample.json(photoPrompt(), {images:[blob], signal:ctl.signal});
+    res = await P.sample.json(aiPrompt(hint, !!ai.blob), ai.blob ? {images:[ai.blob], signal:ctl.signal} : {signal:ctl.signal});
   }catch(e){
-    if(!UI.photo || UI.photo.ctl !== ctl) return;
+    if(UI.ai !== ai || ai.ctl !== ctl) return;
     const code = e && e.code;
-    if(code === 'cancelled'){ const saved = UI.savedAdd; closePhoto(); if(saved) openAdd(null, saved); return; }
-    if(['not_granted','sampling_disabled','not_declared','capability_disabled','capability_removed','images_unavailable'].includes(code)){
-      P.photo = false; closePhoto(); openPhotoUnavailable(); return;
+    if(code === 'cancelled'){ aiForm(); return; }
+    if(code === 'images_unavailable'){ P.photo = false; ai.blob = null; aiForm(); toast('Фото сейчас недоступно — опиши словами'); return; }
+    if(['not_granted','sampling_disabled','not_declared','capability_disabled','capability_removed'].includes(code)){
+      P.photo = false; P.sample = null; closeAi(); openPhotoUnavailable(); return;
     }
-    photoSheet(`<div class="note" style="margin-top:14px"><b>Не получилось распознать</b>${esc(PHOTO_ERR[code] || 'Сбой связи с Claude. Попробуй ещё раз.')}</div>
-      <div style="display:flex;gap:8px;margin-top:12px"><button class="btn" style="flex:1;height:48px" data-act="photo-new">Другое фото</button>${code === 'rate_limited' ? '' : '<button class="btn btn-accent" style="flex:1;height:48px" data-act="photo-retry">Ещё раз</button>'}</div>`);
+    aiSheet(`<div class="note" style="margin-top:14px"><b>Не получилось распознать</b>${esc(AI_ERR[code] || 'Сбой связи с Claude. Попробуй ещё раз.')}</div>
+      <div style="display:flex;gap:8px;margin-top:12px"><button class="btn" style="flex:1;height:48px" data-act="ai-edit">Изменить</button>${code === 'rate_limited' ? '' : '<button class="btn btn-accent" style="flex:1;height:48px" data-act="ai-run">Ещё раз</button>'}</div>`);
     return;
   }
-  if(!UI.photo || UI.photo.ctl !== ctl) return;
-  const tray = photoToTray(res);
+  if(UI.ai !== ai || ai.ctl !== ctl) return;
+  const tray = aiToTray(res);
   const note = res && typeof res.note === 'string' ? res.note.slice(0, 300) : '';
   if(!tray.length){
-    photoSheet(`<div class="note" style="margin-top:14px"><b>Не вижу еды на фото</b>${esc(note || 'Сфоткай поднос сверху, чтобы было видно все блюда.')}</div>
-      <button class="btn btn-accent btn-block" style="margin-top:12px" data-act="photo-new">Сделать другое фото</button>`);
+    aiSheet(`<div class="note" style="margin-top:14px"><b>Не вижу еды</b>${esc(note || 'Сфоткай поднос сверху или опиши словами, что взял.')}</div>
+      <button class="btn btn-accent btn-block" style="margin-top:12px" data-act="ai-edit">Изменить</button>`);
     return;
   }
-  const meal = UI.photo.meal, saved = UI.savedAdd;
-  closePhoto();
+  const meal = ai.meal, saved = UI.savedAdd, title = ai.blob ? '📷 Распознано по фото' : '✍️ Распознано по описанию';
+  closeAi();
   openAdd(meal, saved);
   for(const t of tray){ const same = UI.add.tray.find(x => x.food.id === t.food.id); if(same) same.qty += t.qty; else UI.add.tray.push(t); }
-  UI.add.open = true; UI.add.note = note || 'Порции оценены на глаз — поправь, если взял больше или меньше.';
+  UI.add.open = true; UI.add.noteTitle = title;
+  UI.add.note = note || 'Порции оценены примерно — поправь, если взял больше или меньше.';
   renderAddNote(); renderAddList(); renderTray();
 }
-function photoToTray(res){
+function aiToTray(res){
   const items = res && Array.isArray(res.items) ? res.items.slice(0, 15) : [];
   const out = [];
-  const q4 = v => Math.min(10, Math.max(0.25, Math.round(num(v) * 4) / 4 || 1));
+  const q4 = v => { const n = num(v); return n > 0 ? Math.min(10, Math.max(0.25, Math.round(n * 4) / 4)) : 1; };
   for(const it of items){
     if(!it || typeof it !== 'object') continue;
     const known = it.id ? foodById(String(it.id)) : null;
@@ -1091,9 +1123,9 @@ function photoToTray(res){
   return out;
 }
 const r1 = n => Math.round(n * 10) / 10;
-function closePhoto(){
-  if(UI.photo && UI.photo.url) URL.revokeObjectURL(UI.photo.url);
-  UI.photo = null; closeSheet();
+function closeAi(){
+  if(UI.ai && UI.ai.url) URL.revokeObjectURL(UI.ai.url);
+  UI.ai = null; closeSheet();
 }
 
 /* ---------- toast ---------- */
@@ -1133,7 +1165,7 @@ const A = {
   'intro-profile'(){ S.seenIntro = true; save(); UI.tab = 'profile'; render(); },
   close: closeSheet,
   'guide-back'(){ const saved = UI.savedAdd; closeSheet(); if(saved) openAdd(null, saved); },
-  'photo-close'(){ UI.photo && UI.photo.ctl && UI.photo.ctl.abort(); const saved = UI.savedAdd; closePhoto(); if(saved) openAdd(null, saved); },
+  'ai-close'(){ UI.ai && UI.ai.ctl && UI.ai.ctl.abort(); const saved = UI.savedAdd; closeAi(); if(saved) openAdd(null, saved); },
   'open-add'(el){ if(UI.tab !== 'diary'){ UI.tab = 'diary'; render(); } openAdd(el.dataset.meal); },
   'add-meal'(el){ UI.add.meal = el.dataset.meal; $('#addSeg').innerHTML = mealSeg(UI.add.meal, 'add-meal'); renderTray(); },
   'add-cat'(el){ UI.add.cat = el.dataset.cat; UI.add.q = ''; $('#addQ').value = ''; renderAddCats(); renderAddList(); },
@@ -1264,13 +1296,16 @@ const A = {
   guide: openGuide,
   photo(){
     if(!P.photo) return openPhotoUnavailable();
-    if(UI.add) UI.savedAdd = UI.add;
-    UI.photoMeal = (UI.savedAdd && UI.savedAdd.meal) || autoMeal();
+    if(!UI.ai) startAi();
     $('#photoFile').click();
   },
-  'photo-stop'(){ UI.photo && UI.photo.ctl && UI.photo.ctl.abort(); },
-  'photo-retry'(){ if(UI.photo) runPhoto(UI.photo.blob); },
-  'photo-new'(){ $('#photoFile').click(); },
+  describe(){
+    if(!P.sample) return openPhotoUnavailable();
+    startAi(); aiForm();
+  },
+  'ai-run'(){ runAi(); },
+  'ai-stop'(){ UI.ai && UI.ai.ctl && UI.ai.ctl.abort(); },
+  'ai-edit'(){ aiForm(); },
 };
 
 document.addEventListener('click', ev => {
@@ -1283,6 +1318,7 @@ document.addEventListener('click', ev => {
 document.addEventListener('keydown', ev => { if(ev.key === 'Escape' && $('#sheetRoot').innerHTML) closeSheet(); });
 document.addEventListener('input', ev => {
   const t = ev.target;
+  if(t.id === 'aiHint'){ if(UI.ai) UI.ai.hint = t.value; return; }
   if(t.id === 'addQ'){ UI.add.q = t.value; renderAddCats(); renderAddList(); return; }
   if(t.id === 'foodsQ'){
     UI.foodsQ = t.value;
@@ -1313,9 +1349,11 @@ $('#importFile').addEventListener('change', async ev => {
 
 $('#photoFile').addEventListener('change', async ev => {
   const file = ev.target.files[0]; ev.target.value = '';
-  if(!file || !P.photo) return;
+  if(!file || !P.photo || !UI.ai) return;
   const blob = await prepImage(file);
-  runPhoto(blob);
+  if(UI.ai.url) URL.revokeObjectURL(UI.ai.url);
+  UI.ai.blob = blob; UI.ai.url = URL.createObjectURL(blob);
+  aiForm();
 });
 
 // day rolls over while the app stays open
