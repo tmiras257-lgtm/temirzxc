@@ -333,6 +333,7 @@ input,select{font:inherit; color:inherit}
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 <input type="file" id="photoFile" accept="image/*" hidden>
 <input type="file" id="bodyFile" accept="image/*" hidden>
+<input type="file" id="fitFile" accept="image/*" multiple hidden>
 
 <script>
 (() => {
@@ -1225,11 +1226,56 @@ function openFitEdit(){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Активность · ${dateLabel(k).toLowerCase()}<button class="x" data-act="close" aria-label="Закрыть">✕</button></div>
     <div class="small muted">Цифры из приложения Fitbit за этот день.${fb ? ' Данные, которые пришли из Fitbit автоматически, важнее ручных.' : ''}</div></div>
     <div class="sheet-body">
+      ${P.photo ? `<button class="tool main" style="width:100%;margin:6px 0 4px" data-act="fit-shot" id="fitShotBtn">📷 Заполнить по скриншоту Fitbit</button>
+      <div class="small muted" style="margin:0 2px 12px" id="fitShotNote">Сделай скриншот экрана «Сегодня» в Fitbit, для сна — экрана сна. Можно выбрать несколько сразу. Потом проверь цифры и нажми «Сохранить».</div>` : ''}
       <div class="grid2" style="margin-top:6px">${inp('steps', 'Шаги', '8000')}${inp('burn', 'Сожжено, ккал', '2600')}</div>
       <div class="grid2">${inp('sleep', 'Сон, часов', '7,5')}${inp('rhr', 'Пульс покоя', '62')}</div>
       <div class="note"><b>Где смотреть в Fitbit</b>«Сожжено» — это общий расход калорий за день (Calories burned), а не только тренировка.</div>
     </div>
     <div class="sheet-foot"><button class="btn btn-accent btn-block" data-act="fit-save">Сохранить</button></div>`);
+}
+
+function fitShotPrompt(n){
+  return `${n > 1 ? `These ${n} images are screenshots` : 'This image is a screenshot'} of the Fitbit app on an iPhone (the interface may be in English, Russian or Chinese). Read the day's numbers from it.
+- steps: step count for the day.
+- burn: TOTAL calories burned for the day (Fitbit "Calories burned", "Сожжено калорий", "消耗的卡路里"). Not active, exercise or "Active Zone" calories. If only active or exercise calories are visible, use null.
+- sleep: time asleep in hours as a decimal (7 hr 24 min = 7.4). Not time in bed if both are shown.
+- rhr: resting heart rate in bpm. Not the current or average heart rate.
+- date: the date the screenshot shows as YYYY-MM-DD if it is visible (assume the year ${new Date().getFullYear()}), "today" if it says today / Сегодня / 今天, else null.
+Use null for anything that is not clearly shown. Do not guess. If the images are not from a fitness app, return all nulls and a short Russian note.
+Reply with only JSON: {"steps":8123,"burn":2650,"sleep":7.4,"rhr":61,"date":"today","note":""}`;
+}
+async function runFitShot(files){
+  const btn = $('#fitShotBtn'), note = $('#fitShotNote');
+  if(!btn || !P.sample) return;
+  const max = Math.max(1, P.maxImg || 1);
+  const imgs = [];
+  for(const f of [...files].slice(0, max)) imgs.push(await prepImage(f));
+  btn.disabled = true; btn.innerHTML = '<span class="spin" style="width:18px;height:18px;border-width:2px;border-top-color:var(--accent-ink)"></span>Claude читает скриншот…';
+  let res;
+  try{ res = await P.sample.json(fitShotPrompt(imgs.length), {images:imgs, modelTier:'quick'}); }
+  catch(e){
+    if(!$('#fitShotBtn')) return;
+    btn.disabled = false; btn.textContent = '📷 Заполнить по скриншоту Fitbit';
+    const code = e && e.code;
+    note.textContent = AI_ERR[code] || 'Не получилось прочитать скриншот. Попробуй ещё раз или введи цифры руками.';
+    if(['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed', 'images_unavailable'].includes(code)){ P.photo = false; btn.remove(); }
+    return;
+  }
+  if(!$('#fitShotBtn')) return;
+  btn.disabled = false; btn.textContent = '📷 Ещё скриншот';
+  const lim = {steps:[1, 100000], burn:[500, 10000], sleep:[0.5, 16], rhr:[25, 140]};
+  const got = [];
+  for(const k of FIT_KEYS){
+    const v = num(res && res[k]);
+    if(v >= lim[k][0] && v <= lim[k][1]){ $('#fit-' + k).value = String(k === 'sleep' ? Math.round(v * 10) / 10 : Math.round(v)).replace('.', ','); got.push(k); }
+  }
+  const names = {steps:'шаги', burn:'расход', sleep:'сон', rhr:'пульс покоя'};
+  let msg = got.length ? `Заполнил: ${got.map(k => names[k]).join(', ')}. Проверь и нажми «Сохранить».` : (res && typeof res.note === 'string' && res.note ? res.note.slice(0, 200) : 'Не нашёл на скриншоте нужных цифр.');
+  const d = res && typeof res.date === 'string' ? res.date : '';
+  const shotDay = d === 'today' ? todayKey() : /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null;
+  if(got.length && shotDay && shotDay !== UI.date) msg += ` Внимание: скриншот за ${dateLabel(shotDay).toLowerCase()}, а открыт день «${dateLabel(UI.date).toLowerCase()}».`;
+  note.textContent = msg;
 }
 
 /* ---------- body check-ins: фото формы + оценка Claude ---------- */
@@ -1720,6 +1766,7 @@ const A = {
   'ai-stop'(){ UI.ai && UI.ai.ctl && UI.ai.ctl.abort(); },
   'ai-edit'(){ aiForm(); },
   'fit-edit'(){ openFitEdit(); },
+  'fit-shot'(){ if(P.photo) $('#fitFile').click(); },
   'fit-save'(){
     const f = {};
     const lim = {steps:[1, 100000], burn:[500, 10000], sleep:[0.5, 16], rhr:[25, 140]};
@@ -1816,6 +1863,10 @@ $('#bodyFile').addEventListener('change', async ev => {
   b.slots[b.angle] = {blob, url:URL.createObjectURL(blob)};
   const box = $('#bodySlots'); if(box) box.innerHTML = bodySlots();
   const btn = $('#bodySave'); if(btn) btn.disabled = false;
+});
+$('#fitFile').addEventListener('change', ev => {
+  const files = [...ev.target.files]; ev.target.value = '';
+  if(files.length) runFitShot(files);
 });
 // stored photos that no longer load show a placeholder instead of a broken image
 document.addEventListener('error', ev => { const t = ev.target; if(t && t.tagName === 'IMG' && t.hasAttribute('data-blob')) t.classList.add('broken'); }, true);
