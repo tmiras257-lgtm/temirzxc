@@ -266,6 +266,45 @@ input,select{font:inherit; color:inherit}
 .sync{display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:700; color:var(--dim)}
 .sync i{width:8px; height:8px; border-radius:50%; background:var(--faint)}
 .sync.ok i{background:var(--accent-text)}
+
+/* body check-ins */
+.ph{aspect-ratio:3/4; border-radius:10px; overflow:hidden; background:var(--card2); position:relative}
+.ph img{width:100%; height:100%; object-fit:cover; display:block}
+.ph img.broken{display:none}
+.ph:not(:has(img:not(.broken)))::after{content:'📷'; position:absolute; inset:0; display:grid; place-items:center; opacity:.35; font-size:18px}
+.slots{display:grid; grid-template-columns:repeat(3,1fr); gap:8px}
+.slot{aspect-ratio:3/4; border-radius:16px; background:var(--card); border:1.5px dashed var(--line); position:relative; overflow:hidden; display:grid; place-items:center}
+.slot.on{border:0}
+.slot img{position:absolute; inset:0; width:100%; height:100%; object-fit:cover}
+.slot i{font-style:normal; font-size:26px; color:var(--faint)}
+.slot span{position:absolute; left:6px; bottom:6px; font-size:11px; font-weight:800; background:rgba(0,0,0,.6); color:#fff; border-radius:8px; padding:2px 7px}
+.bc-top{display:flex; gap:14px; align-items:center}
+.bc-thumb{width:86px; flex:none}
+.bc-thumb .ph{border-radius:14px}
+.bc-fat{font-size:28px; font-weight:800; letter-spacing:-.03em; margin:2px 0 8px; line-height:1.1}
+.bc-fat small{font-size:12px; color:var(--dim); font-weight:600; margin-left:6px; letter-spacing:0}
+.scores{display:flex; flex-direction:column; gap:6px}
+.sc{display:grid; grid-template-columns:76px 1fr 24px; align-items:center; gap:8px; font-size:12px; color:var(--dim); font-weight:600}
+.sc b{color:var(--text); text-align:right; font-size:13px}
+.bstrip{display:flex; gap:8px; overflow-x:auto; margin-top:14px; padding-top:12px; border-top:1px solid var(--line); scrollbar-width:none}
+.bstrip::-webkit-scrollbar{display:none}
+.bstrip button{flex:none; width:54px; font-size:11px; color:var(--dim); font-weight:700; display:flex; flex-direction:column; gap:4px; align-items:stretch; text-align:center}
+.pgrid{display:grid; grid-template-columns:repeat(3,1fr); gap:6px}
+.pgrid .ph{border-radius:12px}
+.cmp{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px}
+.cmp .ph{border-radius:14px}
+.cmp .cap{font-size:12px; font-weight:700; color:var(--dim); margin-top:6px; text-align:center}
+.cmp .cap b{color:var(--text)}
+.ev-sec{margin-top:12px; font-size:14px}
+.ev-sec > b{display:block; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin-bottom:4px}
+.elist{margin:0; padding-left:18px}
+.elist li{margin:3px 0}
+.tips{margin:0; padding-left:18px; font-size:13px; color:var(--dim)}
+.tips li{margin:2px 0}
+.fitg{display:grid; grid-template-columns:repeat(4,1fr); gap:6px}
+.fitg div{background:var(--card2); border-radius:12px; padding:10px 4px; text-align:center}
+.fitg b{display:block; font-size:16px; font-weight:800; letter-spacing:-.02em}
+.fitg span{font-size:10.5px; color:var(--dim); font-weight:600}
 </style>
 </head>
 <body>
@@ -293,6 +332,7 @@ input,select{font:inherit; color:inherit}
 <div id="sheetRoot"></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 <input type="file" id="photoFile" accept="image/*" hidden>
+<input type="file" id="bodyFile" accept="image/*" hidden>
 
 <script>
 (() => {
@@ -441,7 +481,7 @@ const LS_KEY = 'bulking.v1';
 function defaults(){
   return {
     profile:{sex:'m', age:18, height:183, weight:73, activity:1.55, surplus:400, ppk:2, fpk:1, customKcal:null},
-    days:{}, weights:[{date:todayKey(), kg:73}], custom:[], recent:[], fav:[], seenIntro:false,
+    days:{}, weights:[{date:todayKey(), kg:73}], custom:[], recent:[], fav:[], seenIntro:false, body:[],
   };
 }
 function load(){
@@ -461,11 +501,14 @@ function save(){
 /* ---------- Claude platform: photo recognition + cloud save (only inside Claude) ---------- */
 // Link to the version of bulking published inside Claude (photo recognition works there).
 const CLAUDE_URL = 'https://claude.ai/artifact/SUktvSDbYag2y7ijdK2K46';
-const P = {inClaude: !!(window.claude && typeof window.claude.use === 'function'), sample:null, photo:false, downloads:null};
+const P = {inClaude: !!(window.claude && typeof window.claude.use === 'function'), sample:null, photo:false, downloads:null, assets:null, maxImg:0};
+// Fitbit days written into the db doc "fitbit" by Claude (or a connector); the page only reads it.
+let Fit = {days:{}, updated:null};
 const Cloud = {db:null, base:null, synced:{}, busy:false, again:false, status:'local'};
 function splitState(){
   const docs = {meta:{v:1, profile:S.profile, weights:S.weights, custom:S.custom, recent:S.recent, fav:S.fav, seenIntro:S.seenIntro}};
   for(const [k, d] of Object.entries(S.days)){ const m = 'm-' + k.slice(0, 7); (docs[m] ||= {days:{}}).days[k] = d; }
+  docs.body = {list:S.body};
   return docs;
 }
 async function cloudFlush(){
@@ -498,12 +541,12 @@ const withTimeout = (pr, ms) => Promise.race([pr, new Promise((_, rej) => setTim
 async function initPlatform(){
   if(!P.inClaude) return;
   const use = n => window.claude.use(n).catch(() => null);
-  const [sample, db, user, downloads] = await Promise.all([use('sample'), use('db'), use('user'), use('downloads')]);
-  P.downloads = downloads;
+  const [sample, db, user, downloads, assets] = await Promise.all([use('sample'), use('db'), use('user'), use('downloads'), use('assets')]);
+  P.downloads = downloads; P.assets = assets;
   if(sample){
     const lim = await sample.limits().catch(() => null);
     P.sample = sample;
-    if(lim && lim.images) P.photo = true;
+    if(lim && lim.images){ P.photo = true; P.maxImg = lim.images.maxCount || 1; }
   }
   if(db && user){
     const id = await user.id().catch(() => null);
@@ -516,7 +559,13 @@ async function initPlatform(){
           const d = defaults(); const st = {...d, days:{}};
           snap.docs.forEach(doc => {
             const b = doc.data() || {};
-            if(doc.id === 'meta'){
+            if(doc.id === 'fitbit'){
+              Fit = {days:(b.days && typeof b.days === 'object') ? b.days : {}, updated:b.updated || null};
+              return; // written by Claude, never by the page
+            }
+            if(doc.id === 'body'){
+              st.body = Array.isArray(b.list) ? b.list.filter(c => c && c.date && c.photos).map(c => ({...c, photos:{...c.photos}})) : [];
+            }else if(doc.id === 'meta'){
               st.profile = {...d.profile, ...(b.profile || {})};
               st.weights = Array.isArray(b.weights) ? b.weights.map(w => ({...w})) : [];
               st.custom = Array.isArray(b.custom) ? b.custom.map(f => ({...f})) : [];
@@ -524,7 +573,7 @@ async function initPlatform(){
               st.fav = Array.isArray(b.fav) ? [...b.fav] : [];
               st.seenIntro = !!b.seenIntro;
             }else if(doc.id.startsWith('m-') && b.days){
-              for(const [k, day] of Object.entries(b.days)) st.days[k] = {water:day.water || 0, entries:(day.entries || []).map(e => ({...e}))};
+              for(const [k, day] of Object.entries(b.days)) st.days[k] = {water:day.water || 0, entries:(day.entries || []).map(e => ({...e})), ...(day.fit ? {fit:{...day.fit}} : {})};
             }
             Cloud.synced[doc.id] = JSON.stringify(b);
           });
@@ -661,6 +710,7 @@ function renderDiary(){
   const w = day.water || 0;
   html += `<section class="card"><div class="water-head"><div style="font-weight:800">Вода</div><div class="small muted">${(w * 0.25).toString().replace('.', ',')} л из 2,5 л · стакан 250 мл</div></div>
     <div class="cups">${Array.from({length:10}, (_, i) => `<button class="cup ${i < w ? 'on' : ''}" data-act="water" data-i="${i}" aria-label="Стакан ${i + 1}"></button>`).join('')}</div></section>`;
+  html += fitCard(UI.date, tot.kcal);
   return html;
 }
 
@@ -891,6 +941,7 @@ function renderProgress(){
       <div class="kpi"><b style="color:${diff >= 0 ? 'var(--accent-text)' : 'var(--danger)'}">${diff >= 0 ? '+' : ''}${(Math.round(diff * 10) / 10).toString().replace('.', ',')}</b><span>с начала, кг</span></div>
       <div class="kpi"><b>${streak}</b><span>дней подряд 🔥</span></div>
     </div>
+    ${bodySection()}
     <div class="h2">Вес</div>
     <section class="card">
       <div class="wlog"><input class="input" id="wInput" inputmode="decimal" placeholder="Вес сегодня, кг" value=""><button class="btn btn-accent" style="height:48px" data-act="weight-log">Записать</button></div>
@@ -903,6 +954,7 @@ function renderProgress(){
       <div class="kv" style="margin-top:8px"><span class="muted">Среднее за 7 дней</span><b>${fmt(avgK)} ккал</b></div>
       <div class="kv"><span class="muted">Белок в среднем</span><b>${Math.round(avgP)} / ${t.prot} г</b></div>
       <div class="kv"><span class="muted">Дней с записями (7 дн.)</span><b>${last7.length} из 7</b></div>
+      ${fitAvgRows()}
     </section>`;
 }
 
@@ -1128,6 +1180,367 @@ function closeAi(){
   UI.ai = null; closeSheet();
 }
 
+/* ---------- activity (Fitbit or manual) ---------- */
+const FIT_KEYS = ['steps', 'burn', 'sleep', 'rhr'];
+function fitFor(k){
+  const manual = getDay(k).fit || null, fb = Fit.days[k] || null;
+  if(!manual && !fb) return null;
+  const out = {...(manual || {})};
+  let fromFb = false;
+  if(fb) for(const key of FIT_KEYS){ const v = num(fb[key]); if(v > 0){ out[key] = v; fromFb = true; } }
+  out.src = fromFb ? 'fitbit' : 'manual';
+  return out;
+}
+function fitCard(k, eaten){
+  const f = fitFor(k) || {};
+  const has = FIT_KEYS.some(x => num(f[x]) > 0);
+  const cell = (v, l) => `<div><b>${v}</b><span>${l}</span></div>`;
+  const isToday = k === todayKey();
+  let bal = '';
+  if(num(f.burn) > 0 && eaten > 0){
+    const b = eaten - f.burn, want = S.profile.surplus;
+    bal = `<div class="kv" style="margin-top:10px"><span class="muted">Съедено − сожжено</span><b style="color:${b >= want - 100 ? 'var(--accent-text)' : 'var(--over)'}">${b >= 0 ? '+' : '−'}${fmt(Math.abs(b))} ккал</b></div>
+      <div class="small muted">Для набора к концу дня нужно около +${fmt(want)}.${isToday ? ' Днём расход ещё растёт, так что смотри вечером.' : ''}</div>`;
+  }
+  return `<section class="card"><div class="water-head"><div style="font-weight:800">Активность</div>
+      <div class="small muted">${f.src === 'fitbit' ? '⌚ Fitbit' : has ? 'вручную' : 'Fitbit или вручную'}</div></div>
+    <div class="fitg">
+      ${cell(num(f.steps) > 0 ? fmt(f.steps) : '—', 'шаги')}
+      ${cell(num(f.burn) > 0 ? fmt(f.burn) : '—', 'сожжено ккал')}
+      ${cell(num(f.sleep) > 0 ? fq(Math.round(f.sleep * 10) / 10) : '—', 'сон, ч')}
+      ${cell(num(f.rhr) > 0 ? Math.round(f.rhr) : '—', 'пульс покоя')}
+    </div>${bal}
+    <div class="meal-actions"><button class="btn btn-soft" data-act="fit-edit">✎ ${has ? 'Изменить' : 'Внести вручную'}</button></div></section>`;
+}
+function fitAvgRows(){
+  const days = Array.from({length:7}, (_, i) => fitFor(addDays(todayKey(), -i))).filter(Boolean);
+  const avg = key => { const v = days.map(d => num(d[key])).filter(x => x > 0); return v.length ? v.reduce((a, b) => a + b) / v.length : 0; };
+  const st = avg('steps'), sl = avg('sleep');
+  return (st ? `<div class="kv"><span class="muted">Шаги в среднем</span><b>${fmt(st)}</b></div>` : '')
+    + (sl ? `<div class="kv"><span class="muted">Сон в среднем</span><b>${fq(Math.round(sl * 10) / 10)} ч</b></div>` : '');
+}
+function openFitEdit(){
+  const k = UI.date, m = getDay(k).fit || {}, fb = Fit.days[k];
+  const inp = (key, label, ph) => `<label class="field"><span>${label}</span><input class="input" id="fit-${key}" inputmode="decimal" placeholder="${ph}" value="${num(m[key]) > 0 ? String(m[key]).replace('.', ',') : ''}"></label>`;
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Активность · ${dateLabel(k).toLowerCase()}<button class="x" data-act="close" aria-label="Закрыть">✕</button></div>
+    <div class="small muted">Цифры из приложения Fitbit за этот день.${fb ? ' Данные, которые пришли из Fitbit автоматически, важнее ручных.' : ''}</div></div>
+    <div class="sheet-body">
+      <div class="grid2" style="margin-top:6px">${inp('steps', 'Шаги', '8000')}${inp('burn', 'Сожжено, ккал', '2600')}</div>
+      <div class="grid2">${inp('sleep', 'Сон, часов', '7,5')}${inp('rhr', 'Пульс покоя', '62')}</div>
+      <div class="note"><b>Где смотреть в Fitbit</b>«Сожжено» — это общий расход калорий за день (Calories burned), а не только тренировка.</div>
+    </div>
+    <div class="sheet-foot"><button class="btn btn-accent btn-block" data-act="fit-save">Сохранить</button></div>`);
+}
+
+/* ---------- body check-ins: фото формы + оценка Claude ---------- */
+const ANGLES = [{id:'front', name:'Спереди', en:'front'}, {id:'side', name:'Сбоку', en:'side'}, {id:'back', name:'Сзади', en:'back'}];
+const SCORES = [['muscle', 'Мышцы'], ['proportions', 'Пропорции'], ['posture', 'Осанка'], ['symmetry', 'Симметрия']];
+const blobUrl = id => '/_blob/' + encodeURIComponent(id);
+const bodySorted = () => [...S.body].sort((a, b) => a.date.localeCompare(b.date));
+const checkFor = k => S.body.find(c => c.date === k);
+const shortDate = k => { const d = parseKey(k); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; };
+const mainPhoto = c => c.photos.front || c.photos.side || c.photos.back;
+const phImg = (id, alt) => `<div class="ph">${id ? `<img src="${blobUrl(id)}" alt="${esc(alt)}" loading="lazy" data-blob>` : ''}</div>`;
+const BlobCache = new Map();
+
+function scoreRows(e){
+  return `<div class="scores">${SCORES.map(([k, l]) => { const v = Math.max(0, Math.min(10, num(e[k])));
+    return `<div class="sc"><span>${l}</span><div class="bar"><span style="width:${v * 10}%;background:var(--accent-text)"></span></div><b>${v || '—'}</b></div>`; }).join('')}</div>`;
+}
+const shootTips = () => `<ul class="tips">
+  <li>Одно место, свет и расстояние; телефон на таймере на уровне пупка</li>
+  <li>Утром, после туалета и до еды, в одних и тех же шортах</li>
+  <li>Стой расслабленно, живот не втягивай</li></ul>`;
+function bodySection(){
+  const list = bodySorted(), last = list[list.length - 1], today = checkFor(todayKey());
+  let html = `<div class="h2">Форма</div>`;
+  if(!last){
+    return html + `<section class="card"><div style="font-weight:800;margin-bottom:4px">Фото формы — точка отсчёта</div>
+      <div class="small muted" style="margin-bottom:10px">Каждое утро три фото: спереди, сбоку и сзади. Claude оценит жир, мышцы, пропорции и осанку и будет сравнивать с прошлыми фото.</div>
+      ${shootTips()}
+      <button class="btn btn-accent btn-block" style="margin-top:14px" data-act="body-new">📸 Сделать первое фото</button></section>`;
+  }
+  const e = last.eval;
+  return html + `<section class="card">
+    <div class="bc-top">
+      <button class="bc-thumb" data-act="body-view" data-date="${last.date}" aria-label="Открыть фото">${phImg(mainPhoto(last), 'Фото формы')}</button>
+      <div style="flex:1;min-width:0">
+        <div class="small muted" style="font-weight:700">${dateLabel(last.date)}${last.waist ? ` · талия ${fq(last.waist)} см` : ''}</div>
+        ${e ? `<div class="bc-fat">${esc(e.fat)}%<small>жира, оценка</small></div>${scoreRows(e)}` : `<div class="small muted" style="margin-top:6px">${P.sample && P.photo ? 'Оценки ещё нет — открой фото и нажми «Оценить».' : 'Оценка работает в bulking внутри Claude.'}</div>`}
+      </div></div>
+    ${e && e.summary ? `<div class="advice">${esc(e.summary)}</div>` : ''}
+    <div class="meal-actions">
+      ${today ? `<button class="btn" style="flex:1" data-act="body-view" data-date="${today.date}">Сегодня ✓ · открыть</button>` : `<button class="btn btn-accent" style="flex:1" data-act="body-new">📸 Фото за сегодня</button>`}
+      ${list.length > 1 ? `<button class="btn" data-act="body-compare">⇆ Сравнить</button>` : ''}
+    </div>
+    ${list.length > 1 ? `<div class="bstrip">${list.slice(-14).reverse().map(c => `<button data-act="body-view" data-date="${c.date}">${phImg(mainPhoto(c), 'Фото ' + shortDate(c.date))}<span>${shortDate(c.date)}</span></button>`).join('')}</div>` : ''}
+  </section>`;
+}
+function openBodyUnavailable(){
+  const body = !P.inClaude
+    ? `<p>Фото формы хранятся и оцениваются в версии bulking, которая открыта внутри Claude.</p>
+       ${CLAUDE_URL ? `<a class="btn btn-accent btn-block" href="${CLAUDE_URL}" target="_blank" rel="noopener" style="text-decoration:none">Открыть bulking в Claude</a>` : ''}`
+    : `<p>Загружать фото в bulking может только владелец страницы. Если это ты — открой страницу заново или проверь разрешения в меню артефакта.</p>`;
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Фото формы<button class="x" data-act="close" aria-label="Закрыть">✕</button></div></div>
+    <div class="sheet-body">${body}</div>`);
+}
+function bodySlots(){
+  const b = UI.body;
+  return ANGLES.map(a => { const s = b.slots[a.id];
+    return `<button class="slot ${s ? 'on' : ''}" data-act="body-pick" data-angle="${a.id}" aria-label="${a.name}: выбрать фото">${s ? `<img src="${s.url}" alt="${a.name}">` : '<i>＋</i>'}<span>${a.name}</span></button>`; }).join('');
+}
+function openBodyNew(){
+  if(!P.assets) return openBodyUnavailable();
+  const k = todayKey(), prev = checkFor(k), lastW = S.weights.find(w => w.date === k);
+  UI.body = {date:k, slots:{}, waist:prev && prev.waist ? String(prev.waist).replace('.', ',') : '', weight:lastW ? String(lastW.kg).replace('.', ',') : '', busy:false, ctl:null};
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Фото формы · сегодня<button class="x" data-act="body-close" aria-label="Закрыть">✕</button></div>
+    <div class="small muted">${prev ? 'Новые фото заменят сегодняшние.' : 'Тот же ракурс, свет и расстояние, что в прошлый раз.'} Можно одно фото, лучше все три.</div></div>
+    <div class="sheet-body">
+      <div class="slots" id="bodySlots">${bodySlots()}</div>
+      <div class="grid2" style="margin-top:14px">
+        <label class="field"><span>Вес утром, кг</span><input class="input" id="bWeight" inputmode="decimal" placeholder="необязательно" value="${esc(UI.body.weight)}"></label>
+        <label class="field"><span>Талия у пупка, см</span><input class="input" id="bWaist" inputmode="decimal" placeholder="необязательно" value="${esc(UI.body.waist)}"></label>
+      </div>
+      <div class="small muted">Фото лежат в хранилище этой страницы в Claude. Страница приватная, пока ты сам ей не поделишься.</div>
+    </div>
+    <div class="sheet-foot"><button class="btn btn-accent btn-block" id="bodySave" data-act="body-save" disabled>${P.sample && P.photo ? 'Сохранить и оценить' : 'Сохранить'}</button></div>`);
+}
+function bodyMsg(title, inner){
+  openSheet(`<div class="sheet-head"><div class="sheet-title">${title}<button class="x" data-act="body-close" aria-label="Закрыть">✕</button></div></div>
+    <div class="sheet-body" id="bodyMsg">${inner}</div>`);
+}
+// async results replace the screen only while the progress sheet is still open
+const bodyMsgOpen = () => !!$('#bodyMsg');
+const ASSET_ERR = {
+  too_large:'Фото слишком большое.', unsupported_type:'Этот формат фото не подходит, сохрани как JPEG.',
+  quota_or_state:'Хранилище bulking заполнено. Удали старые фото формы.', rate_limited:'Слишком часто. Подожди минуту.',
+  upstream_auth:'Нужно заново войти в Claude.', not_granted:'Нет разрешения загружать файлы.',
+};
+async function saveBody(){
+  const b = UI.body; if(!b || b.busy) return;
+  const picked = ANGLES.filter(a => b.slots[a.id]);
+  if(!picked.length) return;
+  b.busy = true;
+  bodyMsg('Фото формы', `<div class="thinking"><span class="spin"></span>Сохраняю фото…</div>`);
+  const k = b.date, prev = checkFor(k);
+  const photos = {...(prev ? prev.photos : {})}, replaced = [];
+  try{
+    for(const a of picked){
+      const blob = b.slots[a.id].blob;
+      const type = /^image\/(jpeg|png|webp|gif)$/.test(blob.type) ? blob.type : null;
+      if(!type) throw {code:'unsupported_type'};
+      let r;
+      try{ r = await P.assets.upload(blob, {type}); }
+      catch(e){ if(e && e.code === 'store_unavailable'){ await new Promise(res => setTimeout(res, 1500)); r = await P.assets.upload(blob, {type}); } else throw e; }
+      if(photos[a.id] && photos[a.id] !== r.id) replaced.push(photos[a.id]);
+      photos[a.id] = r.id; BlobCache.set(r.id, blob);
+    }
+  }catch(e){
+    b.busy = false;
+    bodyMsg('Фото формы', `<div class="note" style="margin-top:6px"><b>Не получилось сохранить фото</b>${esc(ASSET_ERR[e && e.code] || 'Сбой связи. Попробуй ещё раз.')}</div>
+      <button class="btn btn-accent btn-block" style="margin-top:12px" data-act="body-new">Ещё раз</button>`);
+    return;
+  }
+  const kg = num(b.weight), waist = num(b.waist);
+  if(kg >= 30 && kg <= 250){
+    S.weights = S.weights.filter(w => w.date !== k).concat({date:k, kg:Math.round(kg * 10) / 10}).sort((x, y) => x.date.localeCompare(y.date));
+    S.profile.weight = Math.round(kg * 10) / 10;
+  }
+  const rec = {date:k, photos, waist:waist >= 40 && waist <= 200 ? Math.round(waist * 10) / 10 : (prev && prev.waist) || null, eval:null, ts:Date.now()};
+  S.body = S.body.filter(c => c.date !== k).concat(rec);
+  save(); render();
+  // the replaced photos are no longer pointed at by any record
+  replaced.forEach(id => { BlobCache.delete(id); P.assets.delete(id).catch(() => {}); });
+  for(const s of Object.values(b.slots)) URL.revokeObjectURL(s.url);
+  b.slots = {};
+  if(P.sample && P.photo) runBodyEval(k);
+  else { UI.body = null; closeSheet(); toast('Фото формы сохранены'); }
+}
+async function getBlob(id){
+  if(BlobCache.has(id)) return BlobCache.get(id);
+  try{
+    const r = await fetch(blobUrl(id));
+    if(!r.ok) return null;
+    const bl = await r.blob();
+    if(!/^image\//.test(bl.type)) return null;
+    BlobCache.set(id, bl); return bl;
+  }catch(e){ return null; }
+}
+function bodyPrompt(rec, labels, refs){
+  const p = S.profile, t = targets();
+  const ws = [...S.weights].sort((a, b) => a.date.localeCompare(b.date)).slice(-30).map(w => `${w.date}: ${w.kg}`).join(', ');
+  const all = bodySorted();
+  const waists = all.filter(c => c.waist).slice(-12).map(c => `${c.date}: ${c.waist}`).join(', ');
+  const logged = Array.from({length:7}, (_, i) => getDay(addDays(rec.date, -i))).filter(d => d.entries.length);
+  const avgK = logged.length ? Math.round(logged.reduce((s, d) => s + sumUp(d.entries).kcal, 0) / logged.length) : 0;
+  const avgP = logged.length ? Math.round(logged.reduce((s, d) => s + sumUp(d.entries).p, 0) / logged.length) : 0;
+  const fits = Array.from({length:7}, (_, i) => fitFor(addDays(rec.date, -i))).filter(Boolean);
+  const favg = key => { const v = fits.map(f => num(f[key])).filter(x => x > 0); return v.length ? Math.round(v.reduce((a, b) => a + b) / v.length * 10) / 10 : null; };
+  const act = fits.length ? `steps ${favg('steps') ?? 'n/a'}, total burn ${favg('burn') ?? 'n/a'} kcal, sleep ${favg('sleep') ?? 'n/a'} h, resting HR ${favg('rhr') ?? 'n/a'}` : 'no data';
+  const hist = all.filter(c => c.date < rec.date && c.eval).slice(-4).map(c => { const e = c.eval;
+    return `${c.date}: fat ${e.fat}%, muscle ${e.muscle}, proportions ${e.proportions}, posture ${e.posture}, symmetry ${e.symmetry}. ${e.summary}`; }).join('\n');
+  const first = all[0];
+  const sinceFirst = first ? Math.round((parseKey(rec.date) - parseKey(first.date)) / 864e5) : 0;
+  const who = `${p.age}-year-old ${p.sex === 'm' ? 'man' : 'woman'}, ${p.height} cm`;
+  return `You are a frank, supportive physique coach. The person is a ${who}, a university student on a lean bulk: daily target ${t.kcal} kcal and ${t.prot} g protein (planned surplus ${p.surplus} kcal). They take progress photos in the morning from the same spot.
+
+Images, in order:
+${labels.map((l, i) => `${i + 1}. ${l}`).join('\n')}${refs ? '\nUse the earlier photos only for comparison; assess the photos from today.' : ''}
+
+Data:
+- Weight log, date: kg: ${ws || 'none'}
+- Waist at navel, date: cm: ${waists || 'none'}
+- Last 7 days of food log: ${logged.length ? `average ${avgK} kcal and ${avgP} g protein over ${logged.length} logged days` : 'nothing logged'}
+- Activity from Fitbit, 7-day averages: ${act}
+- Days since the first check-in: ${sinceFirst}
+- Earlier assessments, oldest first:
+${hist || 'none (this is the baseline)'}
+
+Assess today's photos and reply in Russian inside JSON:
+- fat: visual body-fat range as a string like "14–17" (3–4 points wide). Never a single number.
+- muscle, proportions, posture, symmetry: integers 1–10. 5 = typical untrained person of this age, 7 = visibly trained, 9 = competitive physique. Keep scores consistent with the earlier assessments unless the photos clearly differ: day-to-day differences are mostly water, food, pump and lighting.
+- summary: 2–3 sentences on what stands out today: strong points and what lags.
+- changes: 1–2 sentences comparing with the earlier photos and assessments. If fewer than 14 days have passed since the first check-in, say real changes are not visible yet and mention only obvious differences. Empty string for the baseline.
+- posture_note: one sentence on posture (pelvic tilt, rounded shoulders, head forward), or "".
+- focus: 2–3 short, concrete tips: training emphasis for lagging areas, a posture drill, or nutrition based on the data (for example, weight not rising means eat more).
+- photo: one short sentence if light, distance, pose or clothing differ in a way that hurts comparison, else "".
+- confidence: "low", "medium" or "high".
+Be honest and specific: no flattery, no body-shaming, no medical claims. If the images do not show a person's body, reply {"error":"short explanation in Russian"}.
+
+Reply with only JSON in this shape:
+{"fat":"14–17","muscle":5,"proportions":6,"posture":6,"symmetry":7,"summary":"...","changes":"...","posture_note":"...","focus":["...","..."],"photo":"","confidence":"medium"}`;
+}
+function cleanEval(r){
+  if(!r || typeof r !== 'object') return null;
+  const str = (v, n) => typeof v === 'string' ? v.trim().slice(0, n) : '';
+  const sc = v => { const n = Math.round(num(v)); return n >= 1 && n <= 10 ? n : null; };
+  const fat = str(r.fat, 12).replace(/\s*%$/, '').replace('-', '–');
+  if(!fat) return null;
+  return {fat, muscle:sc(r.muscle), proportions:sc(r.proportions), posture:sc(r.posture), symmetry:sc(r.symmetry),
+    summary:str(r.summary, 600), changes:str(r.changes, 400), posture_note:str(r.posture_note, 300),
+    focus:Array.isArray(r.focus) ? r.focus.filter(x => typeof x === 'string').slice(0, 4).map(x => x.trim().slice(0, 200)) : [],
+    photo:str(r.photo, 200), confidence:['low', 'medium', 'high'].includes(r.confidence) ? r.confidence : 'medium', at:Date.now()};
+}
+const EVAL_ERR = {
+  rate_limited:'Лимит запросов Claude на сейчас исчерпан. Фото сохранены — оценишь позже.',
+  image_rejected:'Claude не смог прочитать фото.', refused:'Claude не стал оценивать эти фото.',
+  session_expired:'Нужно заново войти в Claude.', invalid_json:'Ответ получился непонятным. Попробуй ещё раз.',
+};
+async function runBodyEval(k){
+  const rec = checkFor(k); if(!rec) return;
+  if(!UI.body) UI.body = {date:k, slots:{}, busy:false, ctl:null};
+  const ctl = new AbortController(); UI.body.ctl = ctl; UI.body.busy = true;
+  bodyMsg('Оценка формы', `<div class="thinking"><span class="spin"></span>Claude смотрит на фото…</div>
+    <div class="small muted" style="margin-bottom:14px">Обычно 20–60 секунд. Фото уже сохранены.</div>
+    <button class="btn btn-block" data-act="body-stop">Отменить</button>`);
+  const max = Math.max(1, P.maxImg || 1), imgs = [], labels = [];
+  for(const a of ANGLES){
+    const id = rec.photos[a.id]; if(!id || imgs.length >= max) continue;
+    const bl = await getBlob(id); if(bl){ imgs.push(bl); labels.push(`today (${rec.date}), ${a.en} view`); }
+  }
+  let refs = 0;
+  if(imgs.length){
+    const earlier = bodySorted().filter(c => c.date < k && c.photos.front);
+    const prev = earlier[earlier.length - 1], first = earlier[0];
+    for(const c of [...new Set([prev, first])]){
+      if(!c || imgs.length >= max) continue;
+      const bl = await getBlob(c.photos.front);
+      if(bl){ imgs.push(bl); labels.push(`earlier check-in (${c.date}), front view${c === first ? ' — the very first one' : ''}`); refs++; }
+    }
+  }
+  if(UI.body?.ctl !== ctl) return;
+  if(!bodyMsgOpen()){ UI.body = null; }
+  else if(!imgs.length){
+    UI.body.busy = false;
+    bodyMsg('Оценка формы', `<div class="note"><b>Не получилось открыть фото</b>Попробуй загрузить их заново.</div>
+      <button class="btn btn-accent btn-block" style="margin-top:12px" data-act="body-new">Загрузить заново</button>`);
+    return;
+  }
+  if(!UI.body) return;
+  let res;
+  try{ res = await P.sample.json(bodyPrompt(rec, labels, refs), {images:imgs, signal:ctl.signal}); }
+  catch(e){
+    if(UI.body?.ctl !== ctl) return;
+    UI.body.busy = false;
+    const code = e && e.code;
+    if(code === 'cancelled'){ UI.body = null; if(bodyMsgOpen()) closeSheet(); return; }
+    if(!bodyMsgOpen()){ UI.body = null; return; }
+    if(['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed', 'images_unavailable'].includes(code)){
+      P.photo = false; UI.body = null; closeSheet(); render(); toast('Фото сохранены. Оценка сейчас недоступна.'); return;
+    }
+    bodyMsg('Оценка формы', `<div class="note"><b>Не получилось оценить</b>${esc(EVAL_ERR[code] || 'Сбой связи с Claude. Фото сохранены — попробуй ещё раз.')}</div>
+      <div class="meal-actions"><button class="btn" style="flex:1;height:48px" data-act="body-close">Позже</button>${code === 'rate_limited' ? '' : `<button class="btn btn-accent" style="flex:1;height:48px" data-act="body-eval" data-date="${k}">Ещё раз</button>`}</div>`);
+    return;
+  }
+  if(UI.body?.ctl !== ctl) return;
+  UI.body = null;
+  const shown = bodyMsgOpen();
+  if(res && typeof res.error === 'string'){
+    if(!shown) return;
+    bodyMsg('Оценка формы', `<div class="note"><b>Не вижу, что оценивать</b>${esc(res.error.slice(0, 300))}</div>`);
+    return;
+  }
+  const ev = cleanEval(res);
+  const cur = checkFor(k);
+  if(!ev || !cur){ if(!shown) return; bodyMsg('Оценка формы', `<div class="note"><b>Ответ получился непонятным</b>Попробуй ещё раз.</div><button class="btn btn-accent btn-block" style="margin-top:12px" data-act="body-eval" data-date="${k}">Ещё раз</button>`); return; }
+  cur.eval = ev; save(); render();
+  if(shown) openBodyView(k); else toast('Оценка формы готова — «Прогресс» → «Форма»');
+}
+function evalBlock(e){
+  return `<div class="bc-fat" style="margin-top:4px">${esc(e.fat)}%<small>жира, оценка${e.confidence === 'low' ? ' · неуверенно' : ''}</small></div>
+    ${scoreRows(e)}
+    ${e.summary ? `<div class="advice">${esc(e.summary)}</div>` : ''}
+    ${e.changes ? `<div class="ev-sec"><b>Изменения</b>${esc(e.changes)}</div>` : ''}
+    ${e.posture_note ? `<div class="ev-sec"><b>Осанка</b>${esc(e.posture_note)}</div>` : ''}
+    ${e.focus && e.focus.length ? `<div class="ev-sec"><b>На чём сосредоточиться</b><ul class="elist">${e.focus.map(f => `<li>${esc(f)}</li>`).join('')}</ul></div>` : ''}
+    ${e.photo ? `<div class="note" style="margin-top:12px"><b>Про фото</b>${esc(e.photo)}</div>` : ''}`;
+}
+function openBodyView(k){
+  const c = checkFor(k); if(!c) return closeSheet();
+  const canEval = P.sample && P.photo;
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Форма · ${dateLabel(k).toLowerCase()}<button class="x" data-act="body-close" aria-label="Закрыть">✕</button></div>
+    <div class="small muted">${[S.weights.find(w => w.date === k) ? `вес ${fq(S.weights.find(w => w.date === k).kg)} кг` : '', c.waist ? `талия ${fq(c.waist)} см` : ''].filter(Boolean).join(' · ') || ' '}</div></div>
+    <div class="sheet-body">
+      <div class="pgrid">${ANGLES.map(a => `<div>${phImg(c.photos[a.id], a.name)}<div class="small muted" style="text-align:center;margin-top:4px;font-weight:700">${a.name}</div></div>`).join('')}</div>
+      ${c.eval ? evalBlock(c.eval) : `<div class="note" style="margin-top:12px"><b>Оценки пока нет</b>${canEval ? 'Нажми «Оценить», и Claude посмотрит на фото.' : 'Оценка работает в bulking внутри Claude.'}</div>`}
+      <div class="meal-actions" style="margin-top:16px">
+        ${canEval ? `<button class="btn ${c.eval ? '' : 'btn-accent'}" data-act="body-eval" data-date="${k}">${c.eval ? '↻ Оценить заново' : 'Оценить'}</button>` : ''}
+        ${P.assets ? `<button class="btn btn-danger" data-act="body-del" data-date="${k}">Удалить</button>` : ''}
+      </div>
+    </div>`);
+}
+function nearestCheck(before){
+  const list = bodySorted().filter(c => c.date <= before);
+  return list[list.length - 1] || null;
+}
+function openBodyCompare(){
+  const list = bodySorted(); if(list.length < 2) return;
+  UI.cmp ||= {base:'first', angle:'front'};
+  const last = list[list.length - 1];
+  const base = UI.cmp.base === 'first' ? list[0] : (nearestCheck(addDays(last.date, -UI.cmp.base)) || list[0]);
+  const a = UI.cmp.angle;
+  const wOf = k => { const w = S.weights.find(x => x.date === k); return w ? w.kg : null; };
+  const dW = wOf(last.date) != null && wOf(base.date) != null ? wOf(last.date) - wOf(base.date) : null;
+  const dWaist = last.waist && base.waist ? last.waist - base.waist : null;
+  const sign = v => (v > 0 ? '+' : v < 0 ? '−' : '') + fq(Math.abs(Math.round(v * 10) / 10));
+  const chip = (v, l) => `<button class="chip ${UI.cmp.base === v ? 'on' : ''}" data-act="cmp-base" data-v="${v}">${l}</button>`;
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Сравнение<button class="x" data-act="close" aria-label="Закрыть">✕</button></div>
+    <div class="chips" style="margin-bottom:10px">${chip('first', 'С первым')}${chip('7', 'Неделя назад')}${chip('30', 'Месяц назад')}</div>
+    <div class="seg" style="grid-template-columns:repeat(3,1fr)">${ANGLES.map(x => `<button class="${x.id === a ? 'on' : ''}" data-act="cmp-angle" data-v="${x.id}">${x.name}</button>`).join('')}</div></div>
+    <div class="sheet-body">
+      <div class="cmp">
+        <div>${phImg(base.photos[a], 'Раньше')}<div class="cap"><b>${shortDate(base.date)}</b>${base.eval ? ` · ${esc(base.eval.fat)}%` : ''}</div></div>
+        <div>${phImg(last.photos[a], 'Сейчас')}<div class="cap"><b>${shortDate(last.date)}</b>${last.eval ? ` · ${esc(last.eval.fat)}%` : ''}</div></div>
+      </div>
+      ${base === last ? '<div class="empty">Нет более раннего фото для этого сравнения.</div>' : `<div class="card" style="margin:14px 0 0;background:var(--card)">
+        <div class="kv"><span class="muted">Прошло</span><b>${Math.round((parseKey(last.date) - parseKey(base.date)) / 864e5)} дн.</b></div>
+        ${dW != null ? `<div class="kv"><span class="muted">Вес</span><b>${sign(dW)} кг</b></div>` : ''}
+        ${dWaist != null ? `<div class="kv"><span class="muted">Талия</span><b>${sign(dWaist)} см</b></div>` : ''}
+      </div>`}
+      <p class="small muted" style="margin-top:12px">Заметные изменения обычно видно через 3–4 недели. День ко дню фото отличаются в основном водой, едой и светом.</p>
+    </div>`);
+}
+
 /* ---------- toast ---------- */
 let toastTimer;
 function toast(msg, undo){
@@ -1306,6 +1719,42 @@ const A = {
   'ai-run'(){ runAi(); },
   'ai-stop'(){ UI.ai && UI.ai.ctl && UI.ai.ctl.abort(); },
   'ai-edit'(){ aiForm(); },
+  'fit-edit'(){ openFitEdit(); },
+  'fit-save'(){
+    const f = {};
+    const lim = {steps:[1, 100000], burn:[500, 10000], sleep:[0.5, 16], rhr:[25, 140]};
+    for(const k of FIT_KEYS){ const v = num($('#fit-' + k).value); if(v >= lim[k][0] && v <= lim[k][1]) f[k] = k === 'sleep' ? Math.round(v * 10) / 10 : Math.round(v); }
+    const d = ensureDay(UI.date);
+    if(Object.keys(f).length) d.fit = {...f, src:'manual'}; else delete d.fit;
+    save(); closeSheet(); render(); toast('Активность записана');
+  },
+  'body-new'(){ openBodyNew(); },
+  'body-close'(){
+    const b = UI.body;
+    if(b){ b.ctl && b.ctl.abort(); Object.values(b.slots || {}).forEach(s => URL.revokeObjectURL(s.url)); }
+    UI.body = null; closeSheet();
+  },
+  'body-pick'(el){ if(!UI.body || UI.body.busy) return; UI.body.angle = el.dataset.angle; $('#bodyFile').click(); },
+  'body-save'(){ saveBody(); },
+  'body-view'(el){ openBodyView(el.dataset.date); },
+  'body-eval'(el){ if(!(P.sample && P.photo)) return; UI.body = null; runBodyEval(el.dataset.date); },
+  'body-stop'(){ UI.body && UI.body.ctl && UI.body.ctl.abort(); },
+  'body-del'(el){
+    if(!el.dataset.armed){
+      el.dataset.armed = '1'; el.textContent = 'Удалить фото этого дня? Нажми ещё раз';
+      setTimeout(() => { if(el.isConnected){ delete el.dataset.armed; el.textContent = 'Удалить'; } }, 4000);
+      return;
+    }
+    const k = el.dataset.date, c = checkFor(k); if(!c) return closeSheet();
+    S.body = S.body.filter(x => x.date !== k);
+    save(); closeSheet(); render();
+    // the record pointing at these photos is gone, so the files go too
+    Object.values(c.photos).forEach(id => { if(id){ BlobCache.delete(id); P.assets && P.assets.delete(id).catch(() => {}); } });
+    toast('Фото удалены');
+  },
+  'body-compare'(){ openBodyCompare(); },
+  'cmp-base'(el){ UI.cmp.base = el.dataset.v === 'first' ? 'first' : +el.dataset.v; openBodyCompare(); },
+  'cmp-angle'(el){ UI.cmp.angle = el.dataset.v; openBodyCompare(); },
 };
 
 document.addEventListener('click', ev => {
@@ -1319,6 +1768,7 @@ document.addEventListener('keydown', ev => { if(ev.key === 'Escape' && $('#sheet
 document.addEventListener('input', ev => {
   const t = ev.target;
   if(t.id === 'aiHint'){ if(UI.ai) UI.ai.hint = t.value; return; }
+  if(t.id === 'bWeight' || t.id === 'bWaist'){ if(UI.body) UI.body[t.id === 'bWeight' ? 'weight' : 'waist'] = t.value; return; }
   if(t.id === 'addQ'){ UI.add.q = t.value; renderAddCats(); renderAddList(); return; }
   if(t.id === 'foodsQ'){
     UI.foodsQ = t.value;
@@ -1355,6 +1805,20 @@ $('#photoFile').addEventListener('change', async ev => {
   UI.ai.blob = blob; UI.ai.url = URL.createObjectURL(blob);
   aiForm();
 });
+
+$('#bodyFile').addEventListener('change', async ev => {
+  const file = ev.target.files[0]; ev.target.value = '';
+  const b = UI.body;
+  if(!file || !b || !b.angle || b.busy) return;
+  const blob = await prepImage(file);
+  if(UI.body !== b) return;
+  if(b.slots[b.angle]) URL.revokeObjectURL(b.slots[b.angle].url);
+  b.slots[b.angle] = {blob, url:URL.createObjectURL(blob)};
+  const box = $('#bodySlots'); if(box) box.innerHTML = bodySlots();
+  const btn = $('#bodySave'); if(btn) btn.disabled = false;
+});
+// stored photos that no longer load show a placeholder instead of a broken image
+document.addEventListener('error', ev => { const t = ev.target; if(t && t.tagName === 'IMG' && t.hasAttribute('data-blob')) t.classList.add('broken'); }, true);
 
 // day rolls over while the app stays open
 let lastToday = todayKey();
